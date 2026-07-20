@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 
 // Adjust include path to where the CUDA header resides in the project.
-#include "src/cuda/american_cuda.cuh"
+#include "cuda/american_cuda.cuh"
 
 // ---------------------------------------------------------------
 // Dummy kernel – just to prove a launch works.

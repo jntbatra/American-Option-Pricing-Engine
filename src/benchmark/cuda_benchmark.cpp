@@ -3,7 +3,7 @@
 #include <chrono>
 
 // Adjust include path as needed.
-#include "src/cuda/american_cuda.cuh"
+#include "cuda/american_cuda.cuh"
 
 int main() {
     std::cout << "N\tTime(s)\tPrice" << std::endl;
