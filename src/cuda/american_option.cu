@@ -59,7 +59,7 @@ __global__ void american_option_kernel(
 }
 
 // ---------------- Host launcher ----------------
-double price_american_call_cuda(const OptionParams& p, int threads_per_block = 512) {
+double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
     int blocks = (p.N + threads_per_block - 1) / threads_per_block;
 
     double* d_partial = nullptr;

@@ -34,7 +34,7 @@ TEST(CudaPricing, SmallProblemLCG) {
     p.m  = 10;
     p.N  = 256;
 
-    double price = price_american_call_cuda(p);
+    double price = price_american_call_cuda(p, 512);
     EXPECT_GT(price, 0.0);
     EXPECT_FALSE(std::isnan(price));
 }
@@ -51,7 +51,7 @@ TEST(CudaPricing, SmallProblemQMC) {
     p.m  = 10;
     p.N  = 256;
 
-    double price = price_american_call_qmc_cuda(p);
+    double price = price_american_call_qmc_cuda(p, 256, 42);
     EXPECT_GT(price, 0.0);
     EXPECT_FALSE(std::isnan(price));
 }

@@ -1,16 +1,19 @@
 cmake_minimum_required(VERSION 3.18)
 project(MonteCarloCuda LANGUAGES CXX CUDA)
 
-# Use C++14
-set(CMAKE_CXX_STANDARD 14)
+# Use C++17 (required by the project: inline variables, structured bindings)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 14)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Default CUDA architecture (sm_80 for A100, change for your GPU)
+# Default CUDA architecture (80 = A100, change for your GPU)
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 80)
 endif()
+
+# Find CUDA toolkit (modern CMake way)
+find_package(CUDAToolkit REQUIRED)
 
 # -----------------------------------------------------------------
 # Source files.

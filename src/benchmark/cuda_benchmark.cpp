@@ -24,7 +24,7 @@ int main() {
         p.N = N;
         p.m = M;
         auto start = std::chrono::high_resolution_clock::now();
-        double price = price_american_call_cuda(p);
+        double price = price_american_call_cuda(p, 512);
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed = end - start;
         std::cout << N << "\t\t" << elapsed.count() << "\t" << price << std::endl;
@@ -36,7 +36,7 @@ int main() {
         p.N = N;
         p.m = M;
         auto start = std::chrono::high_resolution_clock::now();
-        double price = price_american_call_qmc_cuda(p);
+        double price = price_american_call_qmc_cuda(p, 256, 42);
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed = end - start;
         std::cout << N << "\t\t" << elapsed.count() << "\t" << price << std::endl;

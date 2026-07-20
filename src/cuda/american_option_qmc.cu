@@ -88,8 +88,8 @@ __global__ void american_option_qmc_kernel(
 
 // Host-side launcher for QMC kernel
 double price_american_call_qmc_cuda(const OptionParams& p,
-                                     int threads_per_block = 256,
-                                     uint32_t seed         = 42)
+                                     int threads_per_block,
+                                     uint32_t seed)
 {
     // Direction numbers
     unsigned int V_host[GPU_SOBOL_DIM][GPU_SOBOL_BITS];
