@@ -49,6 +49,7 @@ enable_testing()
 # Unit test executable.
 add_executable(run_cuda_tests
     tests/test_cuda.cpp
+    tests/kernel_helpers.cu
     ${CORE_SRC}
     ${CUDA_SRC}
 )
