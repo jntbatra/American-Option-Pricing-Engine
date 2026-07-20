@@ -1,102 +1,53 @@
-cmake_minimum_required(VERSION 3.18)
-project(AmericanOptions LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.14)
+project(MonteCarloCuda LANGUAGES CXX CUDA)
 
-set(CMAKE_CXX_STANDARD 17)
+# Use C++14
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# detect cuda
-include(CheckLanguage)
-check_language(CUDA)
-if(CMAKE_CUDA_COMPILER)
-    enable_language(CUDA)
-    set(CMAKE_CUDA_STANDARD 17)
-    find_package(CUDAToolkit REQUIRED)
-    set(HAVE_CUDA TRUE)
-else()
-    message(WARNING "CUDA compiler not found; CUDA target will be skipped.")
-    set(HAVE_CUDA FALSE)
-endif()
+# Find CUDA (required for CUDA builds)
+find_package(CUDA REQUIRED)
 
-find_package(OpenMP REQUIRED)
+# -----------------------------------------------------------------
+# Core source files – adjust glob patterns if needed.
+file(GLOB_RECURSE CORE_SRC src/core/**/*.cpp src/core/**/*.c src/core/**/*.cu)
+file(GLOB_RECURSE CUDA_SRC src/cuda/**/*.cu src/cuda/**/*.cpp)
 
-# --- shared core ---
-add_library(option_core STATIC
-    src/core/black_scholes.cpp
-    src/core/quasi_rng.cpp
-    src/core/moro_inv_cnd.cpp
-    src/core/halton.cpp
-    src/core/sobol.cpp
-    src/core/scramble.cpp
-    src/core/brownian_bridge.cpp
-    src/core/halton.cpp
-    src/core/sobol.cpp
-    src/core/scramble.cpp
-    src/core/brownian_bridge.cpp
+# -----------------------------------------------------------------
+# Enable testing and fetch GoogleTest.
+include(FetchContent)
+FetchContent_Declare(
+  googletest
+  URL https://github.com/google/googletest/archive/release-1.12.1.zip
 )
-target_include_directories(option_core PUBLIC src)
-target_compile_options(option_core PRIVATE -O3 -march=native)
+# Ensure we link against the same CRT on Windows.
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
 
-# --- serial cpu ---
-add_executable(american_serial
-    src/cpu/american_option_serial.cpp
-    src/benchmark/main.cpp
-)
-target_link_libraries(american_serial PRIVATE option_core)
-target_compile_options(american_serial PRIVATE -O3 -march=native)
-target_compile_definitions(american_serial PRIVATE BACKEND_SERIAL)
-
-# --- openmp ---
-add_executable(american_omp
-    src/openmp/american_option_omp.cpp
-    src/benchmark/main.cpp
-)
-target_compile_options(american_omp PRIVATE -O3 -march=native)
-target_link_libraries(american_omp PRIVATE option_core OpenMP::OpenMP_CXX)
-target_compile_definitions(american_omp PRIVATE BACKEND_OMP)
-
-# --- openmp qmc ---
-add_executable(american_qmc_omp
-    src/openmp/american_option_qmc_omp.cpp
-    src/benchmark/main.cpp
-)
-target_compile_options(american_qmc_omp PRIVATE -fopenmp -O3 -march=native)
-target_link_libraries(american_qmc_omp PRIVATE option_core OpenMP::OpenMP_CXX)
-target_compile_definitions(american_qmc_omp PRIVATE BACKEND_QMC_OMP)
-
-# --- cuda ---
-if(HAVE_CUDA)
-    add_executable(american_cuda
-        src/cuda/american_option.cu
-        src/benchmark/main.cpp
-    )
-    set_target_properties(american_cuda PROPERTIES CUDA_ARCHITECTURES "75;80;86")
-    target_compile_options(american_cuda PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math --ptxas-options=-v>
-        $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native>
-    )
-    target_link_libraries(american_cuda PRIVATE option_core CUDA::cudart)
-    target_compile_definitions(american_cuda PRIVATE BACKEND_CUDA)
-
-    add_executable(american_qmc_cuda
-        src/cuda/sobol_gpu.cu
-        src/cuda/american_option_qmc.cu
-        src/benchmark/main.cpp
-    )
-    set_target_properties(american_qmc_cuda PROPERTIES CUDA_ARCHITECTURES "75;80;86")
-    target_compile_options(american_qmc_cuda PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math --ptxas-options=-v --maxrregcount=64>
-        $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native>
-    )
-    target_link_libraries(american_qmc_cuda PRIVATE option_core CUDA::cudart)
-    target_compile_definitions(american_qmc_cuda PRIVATE BACKEND_QMC_CUDA)
-endif()
-
-# --- validation ---
 enable_testing()
-add_executable(validate
-    tests/validate.cpp
-    src/cpu/american_option_serial.cpp
+
+# -----------------------------------------------------------------
+# Unit test executable.
+add_executable(run_cuda_tests
+    tests/test_cuda.cpp
+    ${CORE_SRC}
+    ${CUDA_SRC}
 )
-target_link_libraries(validate PRIVATE option_core)
-target_compile_options(validate PRIVATE -O3 -march=native)
-add_test(NAME validation COMMAND validate)
+
+target_include_directories(run_cuda_tests PRIVATE src)
+
+target_link_libraries(run_cuda_tests gtest_main ${CUDA_LIBRARIES})
+
+add_test(NAME CudaTests COMMAND run_cuda_tests)
+
+# -----------------------------------------------------------------
+# Benchmark executable.
+add_executable(cuda_benchmark
+    src/benchmark/cuda_benchmark.cpp
+    ${CORE_SRC}
+    ${CUDA_SRC}
+)
+
+target_include_directories(cuda_benchmark PRIVATE src)
+
+target_link_libraries(cuda_benchmark ${CUDA_LIBRARIES})
