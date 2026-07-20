@@ -2,6 +2,7 @@
 #include "kernels.cuh"
 #include "reduction.cuh"
 #include "../core/math_utils.hpp"
+#include "american_cuda.h"
 #include "../core/scramble.hpp"
 #include "../core/brownian_bridge.hpp"
 #include "../core/sobol_joe_kuo.hpp"

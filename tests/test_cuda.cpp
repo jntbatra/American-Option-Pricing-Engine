@@ -2,11 +2,11 @@
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
 
-// Adjust include path to where the CUDA header resides in the project.
-#include "cuda/american_cuda.cuh"
+#include "core/math_utils.hpp"
+#include "cuda/american_cuda.h"
 
 // ---------------------------------------------------------------
-// Dummy kernel – just to prove a launch works.
+// Dummy kernel for verifying a basic launch works.
 __global__ void dummy_kernel(int *out) {
     if (threadIdx.x == 0) *out = 42;
 }
@@ -23,14 +23,35 @@ TEST(CudaBasic, KernelLaunch) {
 }
 
 // ---------------------------------------------------------------
-// Small‑problem pricing test.
-// Expose a thin wrapper in `american_cuda.cuh`:
-//   double run_american_cuda(int num_paths, int exercise_points);
-// The test only checks that the price is a finite, positive number.
-TEST(CudaPricing, SmallProblem) {
-    const int N = 256; // tiny number of Monte‑Carlo paths – fast
-    const int M = 10;  // exercise points
-    double price = run_american_cuda(N, M);
+// Small-problem pricing test using the standard (LCG) CUDA backend.
+TEST(CudaPricing, SmallProblemLCG) {
+    OptionParams p;
+    p.S0 = 100.0;
+    p.X  = 100.0;
+    p.T  = 1.0;
+    p.r  = 0.05;
+    p.v  = 0.20;
+    p.m  = 10;
+    p.N  = 256;
+
+    double price = price_american_call_cuda(p);
+    EXPECT_GT(price, 0.0);
+    EXPECT_FALSE(std::isnan(price));
+}
+
+// ---------------------------------------------------------------
+// Small-problem pricing test using the QMC CUDA backend.
+TEST(CudaPricing, SmallProblemQMC) {
+    OptionParams p;
+    p.S0 = 100.0;
+    p.X  = 100.0;
+    p.T  = 1.0;
+    p.r  = 0.05;
+    p.v  = 0.20;
+    p.m  = 10;
+    p.N  = 256;
+
+    double price = price_american_call_qmc_cuda(p);
     EXPECT_GT(price, 0.0);
     EXPECT_FALSE(std::isnan(price));
 }

@@ -1,6 +1,7 @@
 #include "kernels.cuh"
 #include "reduction.cuh"
 #include "../core/math_utils.hpp"
+#include "american_cuda.h"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cstdio>

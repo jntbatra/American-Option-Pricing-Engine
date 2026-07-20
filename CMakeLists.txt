@@ -1,17 +1,34 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.18)
 project(MonteCarloCuda LANGUAGES CXX CUDA)
 
 # Use C++14
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Find CUDA (required for CUDA builds)
-find_package(CUDA REQUIRED)
+# Default CUDA architecture (sm_80 for A100, change for your GPU)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 80)
+endif()
 
 # -----------------------------------------------------------------
-# Core source files – adjust glob patterns if needed.
-file(GLOB_RECURSE CORE_SRC src/core/**/*.cpp src/core/**/*.c src/core/**/*.cu)
-file(GLOB_RECURSE CUDA_SRC src/cuda/**/*.cu src/cuda/**/*.cpp)
+# Source files.
+set(CORE_SRC
+    src/core/black_scholes.cpp
+    src/core/moro_inv_cnd.cpp
+    src/core/brownian_bridge.cpp
+    src/core/scramble.cpp
+    src/core/sobol.cpp
+    src/core/halton.cpp
+    src/core/quasi_rng.cpp
+)
+
+set(CUDA_SRC
+    src/cuda/american_option.cu
+    src/cuda/american_option_qmc.cu
+    src/cuda/sobol_gpu.cu
+)
 
 # -----------------------------------------------------------------
 # Enable testing and fetch GoogleTest.
@@ -20,7 +37,6 @@ FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/release-1.12.1.zip
 )
-# Ensure we link against the same CRT on Windows.
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
@@ -35,8 +51,7 @@ add_executable(run_cuda_tests
 )
 
 target_include_directories(run_cuda_tests PRIVATE src)
-
-target_link_libraries(run_cuda_tests gtest_main ${CUDA_LIBRARIES})
+target_link_libraries(run_cuda_tests gtest_main CUDA::cudart)
 
 add_test(NAME CudaTests COMMAND run_cuda_tests)
 
@@ -49,5 +64,4 @@ add_executable(cuda_benchmark
 )
 
 target_include_directories(cuda_benchmark PRIVATE src)
-
-target_link_libraries(cuda_benchmark ${CUDA_LIBRARIES})
+target_link_libraries(cuda_benchmark CUDA::cudart)
