@@ -54,7 +54,7 @@ add_executable(run_cuda_tests
     ${CUDA_SRC}
 )
 
-target_include_directories(run_cuda_tests PRIVATE src)
+target_include_directories(run_cuda_tests PRIVATE src ${CMAKE_SOURCE_DIR})
 target_link_libraries(run_cuda_tests gtest_main CUDA::cudart)
 
 add_test(NAME CudaTests COMMAND run_cuda_tests)
