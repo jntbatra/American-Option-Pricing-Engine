@@ -207,11 +207,16 @@ skips them deliberately.
 ./build/validate                        # CPU validation suite
 ```
 
-Full write-up with interactive charts: **[`docs/benchmark-results.html`](docs/benchmark-results.html)**
-(self-contained, open from disk). Design notes for contributors:
-**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**. Raw harness output:
-[`docs/results/`](docs/results/). Charts regenerate with
-`python3 docs/make_charts.py`.
+## Documentation
+
+| Document | For |
+| --- | --- |
+| **[`docs/REPORT.md`](docs/REPORT.md)** | The full write-up — problem, method, correction, validation, profiling, limitations. Start here. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Contributors: module map, design decisions and why, numerical gotchas |
+| [`docs/benchmark-results.html`](docs/benchmark-results.html) | Interactive results dashboard, self-contained, open from disk |
+| [`docs/results/`](docs/results/) | Raw harness output behind every figure |
+
+Charts regenerate with `python3 docs/make_charts.py`.
 
 ---
 
