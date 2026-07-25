@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "fix/**"]
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU build + validation suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        # No GPU on the runner, so the CUDA targets are skipped. Everything the
+        # validation suite checks -- the pricer, the Sobol generator, the
+        # binomial oracle, cross-backend agreement -- is CPU-side.
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  cuda:
+    name: CUDA compile-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.5.0"
+          method: network
+          sub-packages: '["nvcc", "cudart-dev"]'
+      # Runners have no GPU, so the kernels cannot execute -- but they can be
+      # compiled, which catches the majority of CUDA breakage.
+      - name: Compile device translation units
+        run: |
+          for f in src/cuda/*.cu; do
+            echo "== $f"
+            nvcc -std=c++17 -arch=sm_80 -Isrc -c "$f" -o /dev/null
+          done

@@ -220,3 +220,9 @@ yarn-error.log*
 *.key
 secrets.json
 credentials.json
+# Copyrighted reference papers — cited in the README, not redistributed
+papers/
+
+# Scratch
+monte_carlo_fixed*.html
+main.py
