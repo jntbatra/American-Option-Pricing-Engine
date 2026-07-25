@@ -117,6 +117,11 @@ if(HAVE_CUDA)
     add_executable(cuda_benchmark src/benchmark/cuda_benchmark.cpp ${CORE_SRC} ${CUDA_SRC})
     target_include_directories(cuda_benchmark PRIVATE src)
     target_link_libraries(cuda_benchmark PRIVATE CUDA::cudart)
+
+    # Setup / path-generation / LSM breakdown.
+    add_executable(profile_gpu src/benchmark/profile_gpu.cpp ${CORE_SRC} ${CUDA_SRC})
+    target_include_directories(profile_gpu PRIVATE src)
+    target_link_libraries(profile_gpu PRIVATE CUDA::cudart)
 endif()
 
 # -----------------------------------------------------------------

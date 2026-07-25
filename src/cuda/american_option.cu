@@ -10,28 +10,34 @@
 #include <cmath>
 
 // ---------------- Path generation ----------------
-// One thread per path, writing the whole path to global memory point-major.
+// One thread per path, writing TIME-MAJOR: S[i*N + path].
 //
 // LSM regresses across paths at each exercise date, so the path set has to be
 // materialised; the previous kernel kept it in a 64-double per-thread stack
 // array, which was possible only because the naive recursion consumed each path
 // in isolation.
+//
+// Every thread in a warp is at the same i on the same iteration, so writes land
+// on consecutive addresses and coalesce. The point-major layout this replaced
+// scattered them (m+1)*8 bytes apart, wasting 24 of every 32 bytes moved.
+template <typename T>
 __global__ void gen_paths_lcg_kernel(
-    double* __restrict__ S,
-    double S0, double drift, double vol_sqdt,
-    int m, int stride, int N)
+    T* __restrict__ S,
+    T S0, T drift, T vol_sqdt,
+    int m, int N)
 {
     int path = blockIdx.x * blockDim.x + threadIdx.x;
     if (path >= N) return;
 
     uint32_t seed = static_cast<uint32_t>(path + 1) * 1234567u;
-    double* row = S + static_cast<size_t>(path) * stride;
 
-    row[0] = S0;
+    T s = S0;
+    S[path] = s;                                   // i = 0
     for (int i = 1; i <= m; ++i) {
-        const double u = lcg_next(seed);
-        const double z = moro_inv_cnd_device(u);
-        row[i] = row[i - 1] * exp(drift + vol_sqdt * z);
+        const T u = PathMath<T>::uniform(seed);
+        const T z = PathMath<T>::inv_cnd(u);
+        s *= PathMath<T>::expo(drift + vol_sqdt * z);
+        S[static_cast<size_t>(i) * N + path] = s;
     }
 }
 
@@ -54,36 +60,59 @@ double price_american_call_cuda(const OptionParams& p, int threads_per_block,
 
     const auto t_start = std::chrono::high_resolution_clock::now();
 
-    double* d_S = nullptr;
-    const size_t bytes = static_cast<size_t>(p.N) * stride * sizeof(double);
+    // Path storage precision. Float halves the footprint and, on a consumer GPU
+    // where FP64 runs at 1/64 rate, removes most of the path-generation cost.
+    // The regression itself stays double either way.
+    const bool use_float = (p.precision == MC_PRECISION_FLOAT);
+    const size_t elem = use_float ? sizeof(float) : sizeof(double);
+
+    void* d_S = nullptr;
+    const size_t bytes = static_cast<size_t>(p.N) * stride * elem;
     CUDA_TRY(cudaMalloc(&d_S, bytes));
 
     const auto t_setup = std::chrono::high_resolution_clock::now();
 
-    cudaEvent_t ev_begin, ev_end;
+    cudaEvent_t ev_begin, ev_gen, ev_end;
     CUDA_TRY(cudaEventCreate(&ev_begin));
+    CUDA_TRY(cudaEventCreate(&ev_gen));
     CUDA_TRY(cudaEventCreate(&ev_end));
     CUDA_TRY(cudaEventRecord(ev_begin));
 
     const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
-    gen_paths_lcg_kernel<<<blocks, threads_per_block>>>(
-        d_S, p.S0, drift, vol_sqdt, p.m, stride, p.N);
+    if (use_float) {
+        gen_paths_lcg_kernel<float><<<blocks, threads_per_block>>>(
+            static_cast<float*>(d_S), static_cast<float>(p.S0),
+            static_cast<float>(drift), static_cast<float>(vol_sqdt), p.m, p.N);
+    } else {
+        gen_paths_lcg_kernel<double><<<blocks, threads_per_block>>>(
+            static_cast<double*>(d_S), p.S0, drift, vol_sqdt, p.m, p.N);
+    }
     CUDA_TRY_KERNEL();
+    CUDA_TRY(cudaEventRecord(ev_gen));
 
-    const double price = lsm_price_device(d_S, p, threads_per_block, out_stderr);
+    double lsm_ms = 0.0;
+    const double price = use_float
+        ? lsm_price_device(static_cast<const float*>(d_S), p, threads_per_block,
+                           out_stderr, &lsm_ms)
+        : lsm_price_device(static_cast<const double*>(d_S), p, threads_per_block,
+                           out_stderr, &lsm_ms);
 
     CUDA_TRY(cudaEventRecord(ev_end));
     CUDA_TRY(cudaEventSynchronize(ev_end));
 
     if (timing) {
-        float kernel_ms = 0.0f;
+        float kernel_ms = 0.0f, gen_ms = 0.0f;
         cudaEventElapsedTime(&kernel_ms, ev_begin, ev_end);
+        cudaEventElapsedTime(&gen_ms, ev_begin, ev_gen);
         const auto t_end = std::chrono::high_resolution_clock::now();
-        timing->setup_ms  = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
-        timing->kernel_ms = kernel_ms;
-        timing->total_ms  = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+        timing->setup_ms   = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
+        timing->pathgen_ms = gen_ms;
+        timing->lsm_ms     = lsm_ms;
+        timing->kernel_ms  = kernel_ms;
+        timing->total_ms   = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     }
     cudaEventDestroy(ev_begin);
+    cudaEventDestroy(ev_gen);
     cudaEventDestroy(ev_end);
 
     cudaFree(d_S);

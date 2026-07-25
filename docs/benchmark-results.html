@@ -343,9 +343,10 @@
     <p class="standfirst">
       Five backends — serial, OpenMP, CUDA, and quasi-Monte&nbsp;Carlo variants of the
       last two — pricing Bermudan options by Longstaff-Schwartz. After replacing the
-      source paper's per-path recursion, the pricer agrees with the exact
-      Black-Scholes value to <strong>1.4&nbsp;×&nbsp;10<sup>−5</sup></strong>, where the
-      original method was <strong>56% high</strong>.
+      source paper's per-path recursion the pricer agrees with the exact Black-Scholes
+      value to <strong>1.7&nbsp;×&nbsp;10<sup>−5</sup></strong>, where the original
+      method was <strong>56% high</strong>. Profiling then moved the GPU from 19× to
+      <strong>53× serial</strong> — and turned up an overflow bug on the way.
     </p>
     <div class="rig">
       <span><b>CPU</b> Intel i7-14700HX · 20C/28T</span>
@@ -362,14 +363,14 @@
       <span class="sub">Black-Scholes. An American call on a non-dividend stock is worth exactly its European counterpart.</span>
     </div>
     <div class="tile">
-      <span class="k">QMC error @ 1M</span>
-      <span class="v" style="color:var(--good)">+0.000014</span>
-      <span class="sub">Sobol + Brownian bridge. LCG reaches +0.000757 for the same path count.</span>
+      <span class="k">QMC error @ 4M</span>
+      <span class="v" style="color:var(--good)">−0.000017</span>
+      <span class="sub">Sobol + Brownian bridge. LCG reaches +0.001834 on the same path count.</span>
     </div>
     <div class="tile">
       <span class="k">GPU speedup</span>
-      <span class="v">19.2×</span>
-      <span class="sub">CUDA vs serial at N=10⁶. Against 28-thread OpenMP it is 3.4×.</span>
+      <span class="v">53.4×</span>
+      <span class="sub">CUDA vs serial at N=4×10⁶. Against 28-thread OpenMP, 10.0×.</span>
     </div>
     <div class="tile">
       <span class="k">Put vs binomial</span>
@@ -543,6 +544,106 @@
     </div>
   </section>
 
+
+  <!-- ================= OPTIMISATION ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Optimisation</div>
+      <div>
+        <h2>Profiling first, then three fixes</h2>
+        <p>
+          The first working version ran 19× serial, which is poor for an
+          embarrassingly parallel problem. Rather than guess, the launcher was
+          instrumented to split device time into path generation and the LSM
+          backward pass. The measurement contradicted the obvious hypotheses twice.
+        </p>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>Device time at N = 4×10⁶, fp64 paths</caption>
+        <thead><tr><th>Stage</th><th>CUDA LCG</th><th>CUDA QMC</th><th>Share</th></tr></thead>
+        <tbody id="tb-split"></tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h3>Two hypotheses the profiler killed</h3>
+      <p>
+        <strong>“The host round trips dominate.”</strong> The backward pass
+        synchronises 19 times to solve each 3×3 regression on the CPU. That looked
+        like the obvious culprit and it is not: it accounts for well under a
+        millisecond of a 56 ms pass.
+      </p>
+      <p>
+        <strong>“The strided reads dominate.”</strong> Paths were stored
+        point-major, so at a fixed timestep consecutive threads read 168 bytes
+        apart — textbook uncoalesced access. Switching the device layout to
+        time-major changed the runtime by <strong>under 2%</strong>. The layout is
+        still correct and was kept, but it was not the bottleneck.
+      </p>
+      <p>
+        What actually dominated was plain FP64 arithmetic. Path generation is
+        transcendental-heavy — one <code>exp</code> per step, plus two
+        <code>log</code>s in Moro's tail branch — and this GPU runs double
+        precision at 1/64 of its single-precision rate.
+      </p>
+    </div>
+
+    <h3>Storing paths in fp32</h3>
+    <p>
+      Path storage and generation drop to single precision; the regression keeps
+      accumulating in double, because A<sup>T</sup>A's entries scale with N and
+      summing four million terms in float would lose far more than the paths ever
+      could. Both instantiations live in the same binary, so one run prices the
+      same contract both ways and reports the difference rather than asserting it
+      is small.
+    </p>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>fp64 vs fp32 path storage · N = 4×10⁶ · MC standard error 0.007134</caption>
+        <thead>
+          <tr><th>Backend</th><th>fp64 price</th><th>fp32 price</th><th>Difference</th>
+              <th>vs MC noise</th><th>fp64 ms</th><th>fp32 ms</th><th>Speedup</th></tr>
+        </thead>
+        <tbody id="tb-prec"></tbody>
+      </table>
+    </div>
+    <p class="note">
+      The price moves by 8×10⁻⁶ — roughly a thousandth of the Monte Carlo standard
+      error at this path count, so the change is invisible against the statistical
+      noise it sits inside. The QMC backend gains nothing, and shouldn't: its Sobol
+      points and Brownian bridge stay double on purpose, since the low-discrepancy
+      structure is the entire reason that backend exists.
+    </p>
+
+    <div class="callout">
+      <h3>The fp32 experiment surfaced a real bug</h3>
+      <p>
+        At four million paths the single-precision run returned <code>inf</code>.
+        <code>__uint2float_rn(0xFFFFFFFF)</code> rounds up to exactly 2³², so the
+        float LCG can emit exactly <code>1.0</code>, and Moro then evaluates
+        <code>log(−log(0))</code>. The same hole existed in the double path — LCG
+        state <code>0</code> gives <code>u = 0</code> — merely rare enough never to
+        have fired. Both are now clamped inside Φ⁻¹ itself, where the function is
+        genuinely undefined, rather than at the four call sites.
+      </p>
+    </div>
+
+    <h3>Cheaper reduction</h3>
+    <p>
+      The regression accumulator reduced its nine statistics with nine separate
+      block reductions, each carrying a <code>__syncthreads</code> — 171 full block
+      barriers across a 20-date sweep. Warp shuffles are warp-synchronous and need
+      no barrier, so only the cross-warp stage has to be fenced. Folding it to one
+      barrier, and dropping a redundant tenth counter (the constant basis function
+      means A<sup>T</sup>A's leading entry already counts the in-the-money paths),
+      took the backward pass down 13%.
+    </p>
+  </section>
+
   <!-- ================= VALIDATION ================= -->
   <section>
     <div class="sec-head">
@@ -624,27 +725,41 @@
     { m: 21, naive: 16.3388, lsm: 10.4573 }
   ];
 
-  const N_VALS = [1000, 10000, 100000, 200000, 500000, 1000000];
+  const N_VALS = [1000, 10000, 100000, 1000000, 4000000];
 
-  // err = price - EXACT, from the six-decimal benchmark output
-  const ERR_LCG = [0.241814, 0.092363, 0.011733, 0.016819, 0.003145, 0.000757];
-  const ERR_QMC = [-0.012560, -0.003931, -0.000280, -0.000456, 0.000075, 0.000014];
+  // err = price - EXACT, six-decimal harness output (docs/results/).
+  const ERR_LCG = [0.241814, 0.092363, 0.011733, 0.000757, 0.001834];
+  const ERR_QMC = [-0.012560, -0.003931, -0.000280, 0.000014, -0.000017];
 
   const BACKENDS = [
-    { key: "serial",   name: "Serial (LCG)",       color: "--s1",
-      t: [1.179, 5.476, 59.947, 142.256, 397.015, 809.348], err: ERR_LCG },
-    { key: "omp",      name: "OpenMP (LCG)",       color: "--s2",
-      t: [1.106, 2.094, 7.337, 33.048, 68.062, 142.834], err: ERR_LCG },
-    { key: "qmc_omp",  name: "OpenMP QMC",         color: "--s3",
-      t: [1.535, 3.893, 24.652, 60.795, 132.563, 295.120], err: ERR_QMC },
-    { key: "cuda",     name: "CUDA (LCG)",         color: "--s4",
-      t: [0.972, 0.985, 4.825, 9.037, 21.540, 42.133], err: ERR_LCG,
-      setup: [0.028, 0.027, 0.042, 0.099, 0.250, 0.464],
-      kern:  [0.915, 0.926, 4.749, 8.888, 21.231, 41.573] },
-    { key: "qmc_cuda", name: "CUDA QMC",           color: "--s5",
-      t: [0.805, 1.083, 5.327, 10.006, 23.693, 46.406], err: ERR_QMC,
-      setup: [0.072, 0.069, 0.107, 0.136, 0.135, 0.149],
-      kern:  [0.693, 0.978, 5.126, 9.698, 23.213, 45.660] }
+    { key: "serial",   name: "Serial (LCG)",   color: "--s1",
+      t: [1.225, 5.567, 61.327, 798.255, 3199.784], err: ERR_LCG },
+    { key: "omp",      name: "OpenMP (LCG)",   color: "--s2",
+      t: [1.105, 2.187, 12.033, 143.755, 596.664], err: ERR_LCG },
+    { key: "qmc_omp",  name: "OpenMP QMC",     color: "--s3",
+      t: [1.166, 3.015, 29.312, 293.253, 1163.046], err: ERR_QMC },
+    { key: "cuda",     name: "CUDA (LCG)",     color: "--s4",
+      t: [0.617, 0.632, 2.074, 15.398, 59.881], err: ERR_LCG,
+      setup: [0.029, 0.028, 0.033, 0.235, 0.950],
+      kern:  [0.560, 0.572, 2.010, 15.069, 58.764] },
+    { key: "qmc_cuda", name: "CUDA QMC",       color: "--s5",
+      t: [0.777, 1.066, 5.205, 45.126, 178.905], err: ERR_QMC,
+      setup: [0.070, 0.068, 0.099, 0.142, 0.183],
+      kern:  [0.670, 0.962, 5.024, 44.623, 177.575] }
+  ];
+
+  // fp64 vs fp32 path storage, N = 4e6, m = 20. MC standard error 0.007134.
+  const PRECISION = [
+    { name: "CUDA LCG", fp64ms: 160.574, fp32ms: 59.881,
+      fp64: 10.452417, fp32: 10.452409 },
+    { name: "CUDA QMC", fp64ms: 178.774, fp32ms: 178.905,
+      fp64: 10.450566, fp32: 10.450566 }
+  ];
+
+  // Device-time split at N = 4e6, fp64 paths (docs/results/profile_gpu.txt).
+  const SPLIT = [
+    { name: "CUDA LCG", gen: 101.492, lsm: 55.570 },
+    { name: "CUDA QMC", gen: 114.992, lsm: 59.507 }
   ];
 
   const PRICE_LCG = ERR_LCG.map(e => EXACT + e);
@@ -883,11 +998,11 @@
   lineChart({
     boxId: "box-runtime", tipId: "tip-runtime",
     xs: N_VALS, xLog: true, yLog: true,
-    yDomain: [0.5, 1000],
+    yDomain: [0.5, 10000],
     xTitle: "Paths N",
     yTitle: "Wall-clock ms",
     xFmt: fmtN,
-    yFmt: v => v >= 1 ? String(v) : v.toFixed(1),
+    yFmt: v => v >= 1000 ? (v/1000) + "k" : v >= 1 ? String(v) : v.toFixed(1),
     tipFmt: v => v.toFixed(2) + " ms",
     series: BACKENDS.map(b => ({
       name: b.name.replace(" (LCG)", "").replace("OpenMP QMC", "OMP QMC"),
@@ -897,21 +1012,21 @@
 
   // ---------------------------------------------------------------- chart 4: speedup bars
   (function speedChart() {
-    const base = 809.348;
+    const base = 3199.784;
     const rows = BACKENDS.map(b => ({
-      name: b.name, color: b.color, x: base / b.t[5], ms: b.t[5]
+      name: b.name, color: b.color, x: base / b.t[4], ms: b.t[4]
     })).sort((a, b) => a.x - b.x);
 
     const t = tipFor("box-speed", "tip-speed");
     const W = 900, rowH = 46, M = { t: 12, r: 30, b: 40, l: 150 };
     const H = M.t + rows.length * rowH + M.b;
     const iw = W - M.l - M.r;
-    const max = 21;
+    const max = 58;
     const X = v => M.l + v / max * iw;
 
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
 
-    [1, 5, 10, 15, 20].forEach(v => {
+    [1, 10, 20, 30, 40, 50].forEach(v => {
       svg.appendChild(el("line", { x1: X(v), x2: X(v), y1: M.t, y2: M.t + rows.length * rowH,
                                    class: "grid-line" }));
       const lab = el("text", { x: X(v), y: H - 18, class: "tick", "text-anchor": "middle" });
@@ -999,6 +1114,32 @@
         <td>${b.kern ? b.kern[i].toFixed(3) : "—"}</td>
       </tr>`;
     }).join("")).join("");
+
+  document.getElementById("tb-split").innerHTML = (() => {
+    const rows = [["Path generation", "gen"], ["LSM backward pass", "lsm"]];
+    const tot = SPLIT.map(x => x.gen + x.lsm);
+    return rows.map(([label, key]) => `
+      <tr>
+        <td>${label}</td>
+        <td>${SPLIT[0][key].toFixed(1)} ms</td>
+        <td>${SPLIT[1][key].toFixed(1)} ms</td>
+        <td>${(100 * SPLIT[0][key] / tot[0]).toFixed(0)}–${(100 * SPLIT[1][key] / tot[1]).toFixed(0)}%</td>
+      </tr>`).join("");
+  })();
+
+  document.getElementById("tb-prec").innerHTML = PRECISION.map(r => {
+    const d = r.fp32 - r.fp64, sp = r.fp64ms / r.fp32ms;
+    return `<tr>
+      <td><span class="swatch" style="background:var(--s4)"></span>${r.name}</td>
+      <td>${r.fp64.toFixed(6)}</td>
+      <td>${r.fp32.toFixed(6)}</td>
+      <td>${d === 0 ? "0" : d.toExponential(1)}</td>
+      <td class="num-good">${d === 0 ? "identical" : (Math.abs(d) / 0.007134).toExponential(1) + "×"}</td>
+      <td>${r.fp64ms.toFixed(1)}</td>
+      <td>${r.fp32ms.toFixed(1)}</td>
+      <td class="${sp > 1.5 ? "num-good" : ""}">${sp.toFixed(2)}×</td>
+    </tr>`;
+  }).join("");
 
   document.getElementById("tb-valid").innerHTML = VALID.map(v => `
     <tr>

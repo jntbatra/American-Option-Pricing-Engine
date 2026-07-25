@@ -18,9 +18,11 @@ static const int CUDA_QMC_MAX_M = 21;
 // every call and dominates until N gets large. Kernel time is measured with
 // cudaEvents around the device work only.
 struct CudaTiming {
-    double setup_ms  = 0.0;  // allocation + host-to-device transfers
-    double kernel_ms = 0.0;  // path generation + LSM backward pass
-    double total_ms  = 0.0;  // everything the launcher does
+    double setup_ms   = 0.0;  // allocation + host-to-device transfers
+    double pathgen_ms = 0.0;  // path-generation kernel alone
+    double lsm_ms     = 0.0;  // Longstaff-Schwartz backward pass alone
+    double kernel_ms  = 0.0;  // pathgen + lsm
+    double total_ms   = 0.0;  // everything the launcher does
 };
 
 // Standard pseudo-random CUDA (LCG)

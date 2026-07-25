@@ -15,7 +15,7 @@ prices are validated against two independent references:
 
 | check | result |
 | --- | --- |
-| Call on non-dividend stock vs Black-Scholes (exact) | error `+1.4e-5` at N=10⁶ (QMC) |
+| Call on non-dividend stock vs Black-Scholes (exact) | error `-1.7e-5` at N=4×10⁶ (QMC) |
 | American put vs binomial tree, same exercise dates | within 0.14% across four cases |
 | GPU QMC vs host QMC | agree to 1e-6 |
 | OpenMP at 1 thread vs 28 threads | agree to 2.8e-13 |
@@ -193,13 +193,16 @@ Measured on an Intel i7-14700HX (20C/28T) and an RTX 5060 Laptop, CUDA 12.4.
 Contract `S₀ = X = 100, T = 1, r = 5%, σ = 20%, m = 20`; exact Black-Scholes
 price **10.450584**.
 
-| Backend | Price @ 10⁶ | Error | Time | vs serial |
+| Backend | Price @ 4×10⁶ | Error | Time | vs serial |
 | --- | ---: | ---: | ---: | ---: |
-| Serial (LCG) | 10.451341 | `+0.000757` | 809.3 ms | 1.00× |
-| OpenMP (LCG) | 10.451341 | `+0.000757` | 142.8 ms | 5.67× |
-| OpenMP QMC | 10.450597 | `+0.000014` | 295.1 ms | 2.74× |
-| CUDA (LCG) | 10.451341 | `+0.000757` | 42.1 ms | **19.21×** |
-| CUDA QMC | 10.450597 | `+0.000014` | 46.4 ms | 17.44× |
+| Serial (LCG) | 10.452417 | `+0.001834` | 3199.8 ms | 1.00× |
+| OpenMP (LCG), 28 threads | 10.452417 | `+0.001834` | 596.7 ms | 5.36× |
+| OpenMP QMC | 10.450566 | `−0.000017` | 1163.0 ms | 2.75× |
+| CUDA (LCG), fp64 paths | 10.452417 | `+0.001834` | 160.6 ms | 19.9× |
+| **CUDA (LCG), fp32 paths** | 10.452409 | `+0.001825` | **59.9 ms** | **53.4×** |
+| CUDA QMC | 10.450566 | `−0.000017` | 178.9 ms | 17.9× |
+
+Against the 28-thread OpenMP baseline rather than serial, the GPU is 10.0×.
 
 Convergence, absolute error against the exact price:
 
@@ -209,21 +212,37 @@ Convergence, absolute error against the exact price:
 | 10,000 | 9.2e-02 | 3.9e-03 |
 | 100,000 | 1.2e-02 | 2.8e-04 |
 | 1,000,000 | 7.6e-04 | 1.4e-05 |
+| 4,000,000 | 1.8e-03 | 1.7e-05 |
 
 QMC reaches three-decimal accuracy at 100,000 paths, where the pseudo-random
 backends need 1,000,000 — about 8× less work for the same answer.
 
-> **The GPU is handicapped in these numbers.** The RTX 5060 runs FP64 at 1/64 the
-> FP32 rate, and CUDA 12.4 has no native sm_120 target so kernels arrive by PTX
-> JIT from sm_80. Everything on the device is deliberately double precision to
-> keep CPU/GPU agreement testable. Expect a very different speedup column on a
-> datacenter part with full-rate FP64.
+### Where the time goes, and what moved it
 
-> **Setup is not the bottleneck it was assumed to be.** Splitting the timers
-> showed the LCG launcher spends 0.03–0.5 ms in setup (one `cudaMalloc`), while
-> the QMC launcher spends ~0.1 ms — the direction-number rebuild is cheap at
-> these sizes. Below ~10⁴ paths both GPU backends are dominated instead by 38
-> kernel launches and 19 host round trips for the per-timestep regression solves.
+`./build/profile_gpu` splits device time into path generation and the LSM
+backward pass. Two plausible hypotheses died on contact with the measurement:
+
+- **Host round trips.** The backward pass synchronises 19 times to solve each
+  3×3 regression on the CPU. That accounts for well under 1 ms of a 56 ms pass.
+- **Uncoalesced reads.** Paths were stored point-major, putting consecutive
+  threads 168 bytes apart at a fixed timestep. Switching the device layout to
+  time-major changed runtime by under 2%. The layout is still correct and was
+  kept, but it was not the bottleneck.
+
+What dominated (≈63%) was FP64 arithmetic in path generation — one `exp` per
+step plus two `log`s in Moro's tail branch, on a card that runs doubles at 1/64
+the FP32 rate. Storing and generating paths in fp32 while keeping the regression
+in double gives **2.7×** on the LCG backend, for a price change of 8×10⁻⁶
+against a Monte Carlo standard error of 7.1×10⁻³ — a thousandth of the noise it
+sits inside. Select it with `./build/american_cuda call fp32`.
+
+Folding the accumulator's nine block reductions into one barrier (warp shuffles
+need no `__syncthreads`) took a further 13% off the backward pass.
+
+> **The GPU is still handicapped here.** CUDA 12.4 has no native sm_120 target,
+> so kernels arrive by PTX JIT from sm_80. The default remains fp64 because it
+> makes CPU/GPU agreement testable; fp32 is opt-in and its cost is measured
+> above, not assumed.
 
 ## Notes
 

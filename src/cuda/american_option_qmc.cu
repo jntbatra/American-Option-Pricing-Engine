@@ -18,8 +18,9 @@ unsigned int* get_d_V_ptr();
 
 // Mirrors simulate_path_bb() in core/brownian_bridge.cpp step for step, so the
 // CPU and GPU QMC backends produce identical paths from identical Sobol points.
+template <typename T>
 __global__ void gen_paths_qmc_kernel(
-    double* __restrict__       S,
+    T* __restrict__            S,
     const unsigned int* __restrict__ d_shift,
     const unsigned int* __restrict__ d_directions,
     const double* __restrict__ d_bb_wl,
@@ -29,7 +30,7 @@ __global__ void gen_paths_qmc_kernel(
     const int*   __restrict__  d_bb_left,
     const int*   __restrict__  d_bb_right,
     double S0, double r, double v, double dt,
-    int m, int stride, int N)
+    int m, int N)
 {
     unsigned int path = static_cast<unsigned int>(blockIdx.x * blockDim.x + threadIdx.x);
     if (path >= static_cast<unsigned int>(N)) return;
@@ -59,12 +60,19 @@ __global__ void gen_paths_qmc_kernel(
                    + d_bb_std[bb] * z[bb];
     }
 
+    // Time-major output: S[i*N + path], so the warp's writes coalesce.
+    //
+    // The Sobol point and the bridge stay double regardless of T: the
+    // low-discrepancy structure is exactly what this backend is buying, and
+    // narrowing the 32-bit direction numbers would damage it. Only the
+    // stored path narrows.
     const double drift = r - 0.5 * v * v;
-    double* row = S + static_cast<size_t>(path) * stride;
-    row[0] = S0;
+    double s = S0;
+    S[path] = static_cast<T>(s);                   // i = 0
     for (int i = 1; i <= m; ++i) {
         const double dW = W[i] - W[i - 1];
-        row[i] = row[i - 1] * exp(drift * dt + v * dW);
+        s *= exp(drift * dt + v * dW);
+        S[static_cast<size_t>(i) * N + path] = static_cast<T>(s);
     }
 }
 
@@ -136,7 +144,7 @@ double price_american_call_qmc_cuda(const OptionParams& p,
     unsigned int* d_shift = nullptr;
     double *d_bb_wl = nullptr, *d_bb_wr = nullptr, *d_bb_std = nullptr;
     int *d_bb_mid = nullptr, *d_bb_left = nullptr, *d_bb_right = nullptr;
-    double* d_S = nullptr;
+    void* d_S = nullptr;
 
     CUDA_TRY(cudaMalloc(&d_shift,    p.m * sizeof(unsigned int)));
     CUDA_TRY(cudaMalloc(&d_bb_wl,    p.m * sizeof(double)));
@@ -145,7 +153,9 @@ double price_american_call_qmc_cuda(const OptionParams& p,
     CUDA_TRY(cudaMalloc(&d_bb_mid,   p.m * sizeof(int)));
     CUDA_TRY(cudaMalloc(&d_bb_left,  p.m * sizeof(int)));
     CUDA_TRY(cudaMalloc(&d_bb_right, p.m * sizeof(int)));
-    CUDA_TRY(cudaMalloc(&d_S, static_cast<size_t>(p.N) * stride * sizeof(double)));
+    const bool use_float = (p.precision == MC_PRECISION_FLOAT);
+    const size_t elem = use_float ? sizeof(float) : sizeof(double);
+    CUDA_TRY(cudaMalloc(&d_S, static_cast<size_t>(p.N) * stride * elem));
 
     CUDA_TRY(cudaMemcpy(d_shift, shifts_vec.data(), p.m * sizeof(unsigned int), cudaMemcpyHostToDevice));
     CUDA_TRY(cudaMemcpy(d_bb_wl,    bb_wl.data(),    p.m * sizeof(double), cudaMemcpyHostToDevice));
@@ -157,32 +167,50 @@ double price_american_call_qmc_cuda(const OptionParams& p,
 
     const auto t_setup = std::chrono::high_resolution_clock::now();
 
-    cudaEvent_t ev_begin, ev_end;
+    cudaEvent_t ev_begin, ev_gen, ev_end;
     CUDA_TRY(cudaEventCreate(&ev_begin));
+    CUDA_TRY(cudaEventCreate(&ev_gen));
     CUDA_TRY(cudaEventCreate(&ev_end));
     CUDA_TRY(cudaEventRecord(ev_begin));
 
     const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
-    gen_paths_qmc_kernel<<<blocks, threads_per_block>>>(
-        d_S, d_shift, d_dir_ptr,
-        d_bb_wl, d_bb_wr, d_bb_std, d_bb_mid, d_bb_left, d_bb_right,
-        p.S0, p.r, p.v, dt, p.m, stride, p.N);
+    if (use_float) {
+        gen_paths_qmc_kernel<float><<<blocks, threads_per_block>>>(
+            static_cast<float*>(d_S), d_shift, d_dir_ptr,
+            d_bb_wl, d_bb_wr, d_bb_std, d_bb_mid, d_bb_left, d_bb_right,
+            p.S0, p.r, p.v, dt, p.m, p.N);
+    } else {
+        gen_paths_qmc_kernel<double><<<blocks, threads_per_block>>>(
+            static_cast<double*>(d_S), d_shift, d_dir_ptr,
+            d_bb_wl, d_bb_wr, d_bb_std, d_bb_mid, d_bb_left, d_bb_right,
+            p.S0, p.r, p.v, dt, p.m, p.N);
+    }
     CUDA_TRY_KERNEL();
+    CUDA_TRY(cudaEventRecord(ev_gen));
 
-    const double price = lsm_price_device(d_S, p, threads_per_block, out_stderr);
+    double lsm_ms = 0.0;
+    const double price = use_float
+        ? lsm_price_device(static_cast<const float*>(d_S), p, threads_per_block,
+                           out_stderr, &lsm_ms)
+        : lsm_price_device(static_cast<const double*>(d_S), p, threads_per_block,
+                           out_stderr, &lsm_ms);
 
     CUDA_TRY(cudaEventRecord(ev_end));
     CUDA_TRY(cudaEventSynchronize(ev_end));
 
     if (timing) {
-        float kernel_ms = 0.0f;
+        float kernel_ms = 0.0f, gen_ms = 0.0f;
         cudaEventElapsedTime(&kernel_ms, ev_begin, ev_end);
+        cudaEventElapsedTime(&gen_ms, ev_begin, ev_gen);
         const auto t_end = std::chrono::high_resolution_clock::now();
-        timing->setup_ms  = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
-        timing->kernel_ms = kernel_ms;
-        timing->total_ms  = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+        timing->setup_ms   = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
+        timing->pathgen_ms = gen_ms;
+        timing->lsm_ms     = lsm_ms;
+        timing->kernel_ms  = kernel_ms;
+        timing->total_ms   = std::chrono::duration<double, std::milli>(t_end - t_start).count();
     }
     cudaEventDestroy(ev_begin);
+    cudaEventDestroy(ev_gen);
     cudaEventDestroy(ev_end);
 
     cudaFree(d_S);

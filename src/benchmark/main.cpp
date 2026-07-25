@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #if defined(BACKEND_CUDA) || defined(BACKEND_QMC_CUDA)
@@ -58,18 +59,31 @@ int main(int argc, char** argv) {
     base.v  = 0.20;
     base.m  = 20;
     base.N  = 0;
-    base.type = (argc > 1 && argv[1][0] == 'p') ? OPTION_PUT : OPTION_CALL;
+    base.type = OPTION_CALL;
+    base.precision = MC_PRECISION_DOUBLE;
+    for (int a = 1; a < argc; ++a) {
+        const std::string arg = argv[a];
+        if (arg == "put")       base.type = OPTION_PUT;
+        else if (arg == "call") base.type = OPTION_CALL;
+        else if (arg == "fp32") base.precision = MC_PRECISION_FLOAT;
+        else if (arg == "fp64") base.precision = MC_PRECISION_DOUBLE;
+        else {
+            fprintf(stderr, "usage: %s [call|put] [fp64|fp32]\n", argv[0]);
+            return 2;
+        }
+    }
 
     const int path_counts[] = {1000, 10000, 100000,
-                               200000, 500000, 1000000};
+                               1000000, 4000000};
 
     // A call on a non-dividend-paying stock is worth exactly its European
     // counterpart, which gives an exact yardstick. A put has no closed form.
     const bool   have_exact = (base.type == OPTION_CALL);
     const double exact = bs_call(base.S0, base.X, base.T, base.v, base.r);
 
-    printf("# %s   m=%d  %s\n", BACKEND_NAME, base.m,
-           base.type == OPTION_PUT ? "put" : "call");
+    printf("# %s   m=%d  %s  paths=%s\n", BACKEND_NAME, base.m,
+           base.type == OPTION_PUT ? "put" : "call",
+           base.precision == MC_PRECISION_FLOAT ? "fp32" : "fp64");
     if (have_exact) printf("# exact (Black-Scholes) = %.6f\n", exact);
     printf("# median of %d runs after %d warmup\n", REPS, WARMUP);
 #if defined(BACKEND_QMC_OMP) || defined(BACKEND_QMC_CUDA)

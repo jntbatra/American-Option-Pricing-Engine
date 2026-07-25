@@ -14,6 +14,17 @@ double moro_inv_cnd(double u) {
         0.0000321767881768, 0.0000002888167364, 0.0000003960315187
     };
 
+    // Phi^-1 is undefined at the endpoints, and the tail branch below evaluates
+    // log(-log(u)), so u = 0 or u = 1 produces +/-inf and poisons the whole
+    // path. The LCG reaches state 0 within its period, so clamp here rather
+    // than at each of the four call sites.
+    //
+    // This perturbs nothing legitimate: the generator's outputs lie in
+    // [2^-32, 1 - 2^-32] = [2.3e-10, 1 - 2.3e-10], strictly inside the clamp,
+    // so only the pathological endpoints move.
+    if (u < 1e-10) u = 1e-10;
+    else if (u > 1.0 - 1e-10) u = 1.0 - 1e-10;
+
     double x = u - 0.5;
     double r;
     if (std::fabs(x) < 0.42) {

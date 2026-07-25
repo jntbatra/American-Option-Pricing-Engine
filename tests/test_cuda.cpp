@@ -144,3 +144,36 @@ TEST(CudaPricing, QmcMatchesHostQmc) {
 
     EXPECT_NEAR(gpu, cpu, 1e-6) << "gpu=" << gpu << " cpu=" << cpu;
 }
+
+// ---------------------------------------------------------------
+// Regression: the float LCG can emit exactly 1.0, because
+// __uint2float_rn(0xFFFFFFFF) rounds up to 2^32. Moro then evaluates
+// log(-log(0)) and the price comes back inf. It first appeared at N = 4e6 --
+// small runs never draw a state in the top 128 -- so this test needs the paths
+// to be plentiful enough to hit it.
+TEST(CudaPrecision, Fp32PathsStayFinite) {
+    OptionParams p = reference_case(20, 4000000);
+    p.precision = MC_PRECISION_FLOAT;
+
+    double price = price_american_call_cuda(p, 512);
+    EXPECT_TRUE(std::isfinite(price)) << "price=" << price;
+    EXPECT_NEAR(price, bs_call(p.S0, p.X, p.T, p.v, p.r), 0.05);
+}
+
+// ---------------------------------------------------------------
+// Single precision must not move the price by anything approaching the Monte
+// Carlo standard error -- that is the whole justification for offering it.
+TEST(CudaPrecision, Fp32AgreesWithFp64) {
+    OptionParams p = reference_case(20, 1000000);
+
+    double se = 0.0;
+    p.precision = MC_PRECISION_DOUBLE;
+    const double fp64 = price_american_call_cuda(p, 512, &se);
+    p.precision = MC_PRECISION_FLOAT;
+    const double fp32 = price_american_call_cuda(p, 512);
+
+    ASSERT_GT(se, 0.0);
+    // Two orders of magnitude inside the statistical noise, at minimum.
+    EXPECT_LT(std::fabs(fp32 - fp64), 0.01 * se)
+        << "fp64=" << fp64 << " fp32=" << fp32 << " stderr=" << se;
+}

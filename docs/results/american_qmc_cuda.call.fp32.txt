@@ -1,0 +1,11 @@
+# CUDA QMC (Sobol+BB)   m=20  call  paths=fp32
+# exact (Black-Scholes) = 10.450584
+# median of 5 runs after 1 warmup
+# NOTE: stderr is NOT a valid error estimate for QMC -- see `err`.
+
+N                 price     stderr         err   total(ms)   setup(ms)  kernel(ms)
+1000          10.438023   0.444854   -0.012560       0.777       0.070       0.670
+10000         10.446653   0.142374   -0.003931       1.066       0.068       0.962
+100000        10.450304   0.045077   -0.000280       5.205       0.099       5.024
+1000000       10.450597   0.014255   +0.000014      45.126       0.142      44.623
+4000000       10.450566   0.007128   -0.000017     178.905       0.183     177.575
