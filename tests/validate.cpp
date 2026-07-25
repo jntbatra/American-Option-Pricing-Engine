@@ -5,14 +5,19 @@
 
 #include "core/math_utils.hpp"
 #include "core/black_scholes.hpp"
+#include "core/binomial.hpp"
 #include "core/moro_inv_cnd.hpp"
 #include "core/sobol.hpp"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+#ifdef HAVE_OPENMP
+#include <omp.h>
+#endif
 
 double price_american_call_serial(const OptionParams&);
+double price_american_call_serial_naive(const OptionParams&);
 #ifdef HAVE_OPENMP
 double price_american_call_omp(const OptionParams&, int);
 double price_american_call_qmc_omp(const OptionParams&, int, uint32_t);
@@ -118,8 +123,8 @@ static OptionParams reference_case(int m, int N) {
 
 // It is a theorem that early exercise of an American call on a
 // non-dividend-paying stock is never optimal, so the American price must equal
-// the European one. This is the real acceptance test for the pricer: any gap is
-// pure bias or bug, and unlike Monte Carlo noise it does not shrink with N.
+// the European one. This is the primary acceptance test for the pricer: any gap
+// is pure bias or bug, and unlike Monte Carlo noise it does not shrink with N.
 static void test_american_call_equals_european() {
     const double european = bs_call(100.0, 100.0, 1.0, 0.20, 0.05);
 
@@ -131,49 +136,116 @@ static void test_american_call_equals_european() {
         char name[64], buf[160];
         snprintf(name, sizeof name, "american_eq_european_m%d", m);
         snprintf(buf, sizeof buf,
-                 "american=%.4f european=%.4f err=%+.4f (%+.1f%%)",
+                 "american=%.4f european=%.4f err=%+.4f (%+.2f%%)",
                  american, european, err, 100.0 * err / european);
-        check_known_broken(std::fabs(err) < 0.05, name, buf,
-                           "naive per-path recursion exercises with perfect "
-                           "foresight; needs Longstaff-Schwartz");
+        check(std::fabs(err) < 0.05, name, buf);
     }
 }
 
-// The bias above must at least not explode with m. Under perfect foresight it
-// grows without bound; once LSM lands this column should be flat.
-static void test_bias_growth_in_m() {
+// The call test above cannot distinguish "LSM works" from "LSM never
+// exercises", because never exercising is the right answer there. A put is the
+// real test: early exercise binds, there is no closed form, and the binomial
+// tree is an independent oracle sharing no code with the Monte Carlo path.
+//
+// LSM is low-biased -- the fitted exercise policy is suboptimal, and a
+// suboptimal policy under-values -- so the check is one-sided below and tight
+// above.
+static void test_american_put_vs_binomial() {
+    struct Case { double S0, X, v; const char* label; };
+    static const Case cases[] = {
+        {100.0,  100.0, 0.20, "atm"},
+        { 90.0,  100.0, 0.20, "itm"},
+        {110.0,  100.0, 0.20, "otm"},
+        {100.0,  100.0, 0.40, "high_vol"},
+    };
+
+    for (const Case& c : cases) {
+        OptionParams p;
+        p.S0 = c.S0; p.X = c.X; p.T = 1.0; p.r = 0.05; p.v = c.v;
+        p.m = 20; p.N = 200000; p.type = OPTION_PUT;
+
+        // Same exercise dates as the Monte Carlo grid, so the tree prices the
+        // same Bermudan contract rather than a finer-grained American one.
+        double reference = binomial_bermudan(p, 250);
+        double lsm       = price_american_call_serial(p);
+        double err       = lsm - reference;
+
+        char name[64], buf[176];
+        snprintf(name, sizeof name, "american_put_vs_tree_%s", c.label);
+        snprintf(buf, sizeof buf,
+                 "lsm=%.4f tree=%.4f err=%+.4f (%+.2f%%)",
+                 lsm, reference, err, 100.0 * err / reference);
+        // Low-biased: allow more room below than above.
+        check(err < 0.05 && err > -0.20, name, buf);
+    }
+}
+
+// A put must be worth strictly more than its European counterpart -- that
+// difference is the early-exercise premium, and if LSM never exercised it would
+// be zero. Guards against a regression that silently disables exercise.
+static void test_put_early_exercise_premium() {
+    OptionParams p;
+    p.S0 = 90.0; p.X = 100.0; p.T = 1.0; p.r = 0.05; p.v = 0.20;
+    p.m = 20; p.N = 200000; p.type = OPTION_PUT;
+
+    double american = price_american_call_serial(p);
+    double european = bs_put(p.S0, p.X, p.T, p.v, p.r);
+
+    char buf[160];
+    snprintf(buf, sizeof buf, "american=%.4f european=%.4f premium=%+.4f",
+             american, european, american - european);
+    check(american - european > 0.10, "put_early_exercise_premium", buf);
+}
+
+// Side-by-side with the original paper's per-path recursion, which decides
+// exercise using each path's own realised future.
+static void test_lsm_vs_naive_bias() {
     const double european = bs_call(100.0, 100.0, 1.0, 0.20, 0.05);
-    printf("  bias vs European = %.4f as m grows (flat once LSM lands):\n",
-           european);
+    printf("  call on non-dividend stock, exact price = %.4f\n", european);
+    printf("    %-5s %10s %10s %10s %10s\n",
+           "m", "naive", "bias", "lsm", "bias");
     for (int m = 1; m <= 21; m += 4) {
         OptionParams p = reference_case(m, 100000);
-        double price = price_american_call_serial(p);
-        printf("    m=%-3d price=%8.4f  bias=%+7.4f\n",
-               m, price, price - european);
+        double naive = price_american_call_serial_naive(p);
+        double lsm   = price_american_call_serial(p);
+        printf("    %-5d %10.4f %+10.4f %10.4f %+10.4f\n",
+               m, naive, naive - european, lsm, lsm - european);
     }
 }
 
 #ifdef HAVE_OPENMP
-// All CPU backends must agree. This is what would have caught the Sobol
-// point-major/dimension-major mix-up in the QMC OpenMP backend.
+// Cross-backend agreement. Note that this binary compiles the serial backend
+// WITH -fopenmp (it links OpenMP for the other two), so the serial and OpenMP
+// entry points run the same parallel code here and comparing them proves
+// nothing. What does prove something is running the parallel backend at one
+// thread versus many: the LSM regression accumulates A^T A by reduction, so a
+// thread-count-dependent answer would mean the reduction is wrong.
+//
+// The results are not bit-identical -- floating-point summation order differs,
+// and a path sitting exactly on the exercise boundary can flip -- so this is a
+// tolerance check, not an equality one.
 static void test_backends_agree() {
     OptionParams p = reference_case(10, 200000);
 
-    double serial = price_american_call_serial(p);
-    double omp    = price_american_call_omp(p, 0);
+    // Capture the default before the single-threaded run, since passing a
+    // thread count calls omp_set_num_threads() and that setting persists.
+    const int max_threads = omp_get_max_threads();
 
-    char buf[160];
-    snprintf(buf, sizeof buf, "serial=%.6f omp=%.6f diff=%.2g",
-             serial, omp, std::fabs(serial - omp));
-    // Same LCG stream per path, so these must match to summation rounding.
-    check(std::fabs(serial - omp) < 1e-6, "serial_vs_omp_identical", buf);
+    double one  = price_american_call_omp(p, 1);
+    double many = price_american_call_omp(p, max_threads);
 
-    // QMC uses a different point set, so it converges to the same value but
-    // not path-for-path.
+    char buf[176];
+    snprintf(buf, sizeof buf, "1 thread=%.6f %d threads=%.6f diff=%.2g",
+             one, max_threads, many, std::fabs(one - many));
+    check(std::fabs(one - many) < 1e-4, "omp_thread_count_invariant", buf);
+
+    // QMC draws a different point set, so it converges to the same value but
+    // not path-for-path. This is what would have caught the Sobol
+    // point-major/dimension-major mix-up.
     double qmc = price_american_call_qmc_omp(p, 0, 42u);
-    snprintf(buf, sizeof buf, "serial=%.4f qmc_omp=%.4f diff=%.4f",
-             serial, qmc, std::fabs(serial - qmc));
-    check(std::fabs(serial - qmc) < 0.25, "serial_vs_qmc_omp_agree", buf);
+    snprintf(buf, sizeof buf, "lcg=%.4f qmc_omp=%.4f diff=%.4f",
+             many, qmc, std::fabs(many - qmc));
+    check(std::fabs(many - qmc) < 0.25, "lcg_vs_qmc_omp_agree", buf);
 }
 #endif
 
@@ -186,6 +258,8 @@ int main() {
 
     printf("\n=== pricing ===\n");
     test_american_call_equals_european();
+    test_american_put_vs_binomial();
+    test_put_early_exercise_premium();
 #ifdef HAVE_OPENMP
     test_backends_agree();
 #else
@@ -193,7 +267,7 @@ int main() {
 #endif
 
     printf("\n=== diagnostics ===\n");
-    test_bias_growth_in_m();
+    test_lsm_vs_naive_bias();
 
     printf("\n%d failure(s), %d known-broken.\n", g_failures, g_xfail);
     return g_failures == 0 ? 0 : 1;

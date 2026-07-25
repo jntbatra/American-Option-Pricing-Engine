@@ -2,30 +2,17 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include "moro_device.cuh"
+#include "../core/hd_math.hpp"
 
-#ifndef M_SQRT1_2
-#define M_SQRT1_2 0.70710678118654752440
-#endif
-
+// Linear congruential generator, in double precision to match
+// src/core/quasi_rng.cpp exactly. The state update is integer arithmetic and so
+// is already exact; returning a double rather than a float is what makes the
+// GPU draw the same uniforms as the CPU.
 __device__ __forceinline__
-float lcg_next(uint32_t& state) {
+double lcg_next(uint32_t& state) {
     state = 1664525u * state + 1013904223u;
-    return __uint2float_rn(state) * 2.3283064365386963e-10f;
+    return static_cast<double>(state) * 2.3283064365386963e-10;
 }
 
-__device__ __forceinline__
-double cnd_device(double d);
-
-__device__ __forceinline__
-double bs_call_device(double S, double X, double t, double v, double r) {
-    if (t <= 0.0) return fmax(S - X, 0.0);
-    double sqt = sqrt(t);
-    double d1  = (log(S / X) + (r + 0.5 * v * v) * t) / (v * sqt);
-    double d2  = d1 - v * sqt;
-    return S * cnd_device(d1) - X * exp(-r * t) * cnd_device(d2);
-}
-
-__device__ __forceinline__
-double cnd_device(double d) {
-    return 0.5 * erfc(-d * M_SQRT1_2);
-}
+// Black-Scholes and payoff helpers now live in core/hd_math.hpp, compiled for
+// both host and device: mc_bs_call, mc_bs_put, mc_bs_european, mc_intrinsic.

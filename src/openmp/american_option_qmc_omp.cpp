@@ -2,7 +2,7 @@
 #include "core/scramble.hpp"
 #include "core/moro_inv_cnd.hpp"
 #include "core/black_scholes.hpp"
-#include "core/backward_induction.hpp"
+#include "core/lsm.hpp"
 #include "core/brownian_bridge.hpp"
 #include "core/math_utils.hpp"
 #include <omp.h>
@@ -17,9 +17,9 @@ double price_american_call_qmc_omp(const OptionParams& p,
 {
     if (num_threads > 0) omp_set_num_threads(num_threads);
 
-    const int    m        = p.m;
-    const double dt       = p.T / static_cast<double>(m + 1);
-    const double discount = std::exp(-p.r * dt);
+    const int    m      = p.m;
+    const int    stride = m + 1;
+    const double dt     = p.T / static_cast<double>(m + 1);
 
     SobolGenerator gen(m);
     gen.set_digital_shift(make_digital_shift(m, seed));
@@ -39,24 +39,17 @@ double price_american_call_qmc_omp(const OptionParams& p,
 
     auto bridge = build_brownian_bridge(m, dt);
 
-    double total = 0.0;
+    // LSM regresses across paths at each exercise date, so the whole path set
+    // has to be materialised rather than consumed one path at a time.
+    std::vector<double> S(static_cast<size_t>(p.N) * stride);
 
-    #pragma omp parallel reduction(+:total)
-    {
-        std::vector<double> S_path(m + 1);
-
-        #pragma omp for schedule(static)
-        for (int n = 0; n < p.N; ++n) {
-            // Point-major layout: this path's m coordinates are contiguous.
-            const double* z = &z_flat[static_cast<size_t>(n) * m];
-
-            simulate_path_bb(z, bridge, p.S0, p.r, p.v, dt, m, S_path.data());
-
-            total += american_call_path_value(S_path.data(), m, p.X, dt,
-                                              p.v, p.r, discount);
-        }
+    #pragma omp parallel for schedule(static)
+    for (int n = 0; n < p.N; ++n) {
+        // Point-major layout: this path's m coordinates are contiguous.
+        const double* z = &z_flat[static_cast<size_t>(n) * m];
+        simulate_path_bb(z, bridge, p.S0, p.r, p.v, dt, m,
+                         &S[static_cast<size_t>(n) * stride]);
     }
 
-    // american_call_path_value() already discounts to t = 0.
-    return total / static_cast<double>(p.N);
+    return lsm_price_from_paths(S.data(), p.N, p);
 }

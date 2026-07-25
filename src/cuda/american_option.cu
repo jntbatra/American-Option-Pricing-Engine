@@ -1,96 +1,64 @@
 #include "kernels.cuh"
-#include "reduction.cuh"
-#include "../core/backward_induction.hpp"
+#include "lsm_gpu.h"
+#include "cuda_check.h"
+#include "../core/hd_math.hpp"
 #include "../core/math_utils.hpp"
 #include "american_cuda.h"
 #include <cuda_runtime.h>
-#include <device_launch_parameters.h>
-#include <cstdio>
 #include <cstdint>
-#include <vector>
 #include <cmath>
 
-// ---------------- Main pricing kernel ----------------
-__global__ void american_option_kernel(
-    double* __restrict__ d_partial,
-    double S0, double X, double T,
-    double r,  double v,
-    int m, int N)
+// ---------------- Path generation ----------------
+// One thread per path, writing the whole path to global memory point-major.
+//
+// LSM regresses across paths at each exercise date, so the path set has to be
+// materialised; the previous kernel kept it in a 64-double per-thread stack
+// array, which was possible only because the naive recursion consumed each path
+// in isolation.
+__global__ void gen_paths_lcg_kernel(
+    double* __restrict__ S,
+    double S0, double drift, double vol_sqdt,
+    int m, int stride, int N)
 {
-    extern __shared__ double sdata[];
-
     int path = blockIdx.x * blockDim.x + threadIdx.x;
+    if (path >= N) return;
 
-    const double dt       = T / static_cast<double>(m + 1);
-    const double sqdt     = sqrt(dt);
-    const double drift    = (r - 0.5 * v * v) * dt;
-    const double discount = exp(-r * dt);
+    uint32_t seed = static_cast<uint32_t>(path + 1) * 1234567u;
+    double* row = S + static_cast<size_t>(path) * stride;
 
-    double payoff = 0.0;
-
-    if (path < N) {
-        uint32_t seed = static_cast<uint32_t>(path + 1) * 1234567u;
-
-        // Per-thread path buffer. Safe for m <= 63.
-        double S_path[64];
-        S_path[0] = S0;
-
-        #pragma unroll 1
-        for (int i = 1; i <= m; ++i) {
-            float  u = lcg_next(seed);
-            double z = static_cast<double>(moro_inv_cnd_device(u));
-            S_path[i] = S_path[i-1] * exp(drift + v * sqdt * z);
-        }
-
-        payoff = american_call_path_value(S_path, m, X, dt, v, r, discount);
-    }
-
-    double block_sum = block_reduce_sum(payoff, sdata);
-
-    if (threadIdx.x == 0) {
-        d_partial[blockIdx.x] = block_sum;
+    row[0] = S0;
+    for (int i = 1; i <= m; ++i) {
+        const double u = lcg_next(seed);
+        const double z = moro_inv_cnd_device(u);
+        row[i] = row[i - 1] * exp(drift + vol_sqdt * z);
     }
 }
 
 // ---------------- Host launcher ----------------
 double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
-    // The kernel's per-thread path buffer is double S_path[64], indexed 0..m.
     if (p.m < 1 || p.m > CUDA_MAX_M) {
         fprintf(stderr, "price_american_call_cuda: m=%d out of range (1..%d)\n",
                 p.m, CUDA_MAX_M);
         return 0.0;
     }
+    if (p.N <= 0 || threads_per_block <= 0) return 0.0;
 
-    int blocks = (p.N + threads_per_block - 1) / threads_per_block;
+    const int    stride   = p.m + 1;
+    const double dt       = p.T / static_cast<double>(p.m + 1);
+    const double drift    = (p.r - 0.5 * p.v * p.v) * dt;
+    const double vol_sqdt = p.v * std::sqrt(dt);
 
-    double* d_partial = nullptr;
-    cudaMalloc(&d_partial, blocks * sizeof(double));
-    cudaMemset(d_partial, 0, blocks * sizeof(double));
+    double* d_S = nullptr;
+    const size_t bytes = static_cast<size_t>(p.N) * stride * sizeof(double);
+    CUDA_TRY(cudaMalloc(&d_S, bytes));
 
-    int num_warps = (threads_per_block + 31) / 32;
-    int shared_mem_bytes = num_warps * sizeof(double);
+    const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
+    gen_paths_lcg_kernel<<<blocks, threads_per_block>>>(
+        d_S, p.S0, drift, vol_sqdt, p.m, stride, p.N);
+    CUDA_TRY_KERNEL();
 
-    american_option_kernel<<<blocks, threads_per_block, shared_mem_bytes>>>(
-        d_partial,
-        p.S0, p.X, p.T,
-        p.r, p.v,
-        p.m, p.N
-    );
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        fprintf(stderr, "CUDA kernel launch error: %s\n", cudaGetErrorString(err));
-        cudaFree(d_partial);
-        return 0.0;
-    }
-    cudaDeviceSynchronize();
+    const double price = lsm_price_device(d_S, p, threads_per_block);
 
-    std::vector<double> h_partial(blocks);
-    cudaMemcpy(h_partial.data(), d_partial, blocks * sizeof(double), cudaMemcpyDeviceToHost);
-    cudaFree(d_partial);
-
-    double total = 0.0;
-    for (double x : h_partial) total += x;
-
-    // american_call_path_value() already discounts to t = 0.
-    return total / static_cast<double>(p.N);
+    cudaFree(d_S);
+    return price;
 }

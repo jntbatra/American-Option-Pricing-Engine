@@ -1,7 +1,8 @@
 #include "sobol_gpu.cuh"
 #include "kernels.cuh"
-#include "reduction.cuh"
-#include "../core/backward_induction.hpp"
+#include "lsm_gpu.h"
+#include "cuda_check.h"
+#include "../core/hd_math.hpp"
 #include "../core/math_utils.hpp"
 #include "american_cuda.h"
 #include "../core/scramble.hpp"
@@ -14,9 +15,11 @@
 
 unsigned int* get_d_V_ptr();
 
-__global__ void american_option_qmc_kernel(
-    double* __restrict__       d_result,
-    const unsigned int* __restrict__ d_shift_u,
+// Mirrors simulate_path_bb() in core/brownian_bridge.cpp step for step, so the
+// CPU and GPU QMC backends produce identical paths from identical Sobol points.
+__global__ void gen_paths_qmc_kernel(
+    double* __restrict__       S,
+    const unsigned int* __restrict__ d_shift,
     const unsigned int* __restrict__ d_directions,
     const double* __restrict__ d_bb_wl,
     const double* __restrict__ d_bb_wr,
@@ -24,64 +27,47 @@ __global__ void american_option_qmc_kernel(
     const int*   __restrict__  d_bb_mid,
     const int*   __restrict__  d_bb_left,
     const int*   __restrict__  d_bb_right,
-    double S0, double X, double T,
-    double r,  double v,
-    int m, int N)
+    double S0, double r, double v, double dt,
+    int m, int stride, int N)
 {
-    extern __shared__ double sdata[];
+    unsigned int path = static_cast<unsigned int>(blockIdx.x * blockDim.x + threadIdx.x);
+    if (path >= static_cast<unsigned int>(N)) return;
 
-    unsigned int path_id = static_cast<unsigned int>(blockIdx.x * blockDim.x + threadIdx.x);
-
-    const double dt       = T / static_cast<double>(m + 1);
-    const double drift    = (r - 0.5 * v * v) * dt;
-    const double discount = exp(-r * dt);
-
-    double payoff = 0.0;
-
-    if (path_id < static_cast<unsigned int>(N)) {
-        float u_sobol[GPU_SOBOL_DIM];  
-        sobol_point_device(path_id, m, d_shift_u, d_directions, u_sobol);
-
-        double z[GPU_SOBOL_DIM];
-        for (int d = 0; d < m; ++d) {
-            float u = fmaxf(fminf(u_sobol[d], 1.0f - 1e-7f), 1e-7f);
-            z[d] = static_cast<double>(moro_inv_cnd_device(u));
-        }
-
-        double W[GPU_SOBOL_DIM + 1];   
-        W[0] = 0.0;
-        for (int bb = 0; bb < m; ++bb) {
-            int mid   = d_bb_mid[bb];
-            int left  = d_bb_left[bb];
-            int right = d_bb_right[bb];
-            double left_val = 0.0;
-            double right_val = 0.0;
-            if (d_bb_wl[bb] != 0.0 && left >= 0) {
-                left_val = W[left + 1];
-            }
-            if (d_bb_wr[bb] != 0.0 && right >= 0) {
-                right_val = W[right + 1];
-            }
-            W[mid + 1] = d_bb_wl[bb] * left_val
-                       + d_bb_wr[bb] * right_val
-                       + d_bb_std[bb] * z[bb];
-        }
-
-        double S[GPU_SOBOL_DIM + 1];
-        S[0] = S0;
-        for (int i = 1; i <= m; ++i) {
-            double dW = W[i] - W[i - 1];
-            S[i] = S[i-1] * exp(drift + v * dW);
-        }
-
-        payoff = american_call_path_value(S, m, X, dt, v, r, discount);
+    // Sobol point, then normal shocks in place.
+    double z[GPU_SOBOL_DIM];
+    sobol_point_device(path, m, d_shift, d_directions, z);
+    for (int d = 0; d < m; ++d) {
+        // Same clamp as the host backend, so the two agree in the tails.
+        const double u = fmax(1e-10, fmin(z[d], 1.0 - 1e-10));
+        z[d] = moro_inv_cnd_device(u);
     }
 
-    double block_sum = block_reduce_sum(payoff, sdata);
-    if (threadIdx.x == 0) d_result[blockIdx.x] = block_sum;
+    // Brownian bridge: fill the Wiener path in variance-decreasing order.
+    double W[GPU_SOBOL_DIM + 1];
+    W[0] = 0.0;
+    for (int bb = 0; bb < m; ++bb) {
+        const int mid   = d_bb_mid[bb];
+        const int left  = d_bb_left[bb];
+        const int right = d_bb_right[bb];
+        double left_val  = 0.0;
+        double right_val = 0.0;
+        if (d_bb_wl[bb] != 0.0 && left  >= 0) left_val  = W[left + 1];
+        if (d_bb_wr[bb] != 0.0 && right >= 0) right_val = W[right + 1];
+        W[mid + 1] = d_bb_wl[bb] * left_val
+                   + d_bb_wr[bb] * right_val
+                   + d_bb_std[bb] * z[bb];
+    }
+
+    const double drift = r - 0.5 * v * v;
+    double* row = S + static_cast<size_t>(path) * stride;
+    row[0] = S0;
+    for (int i = 1; i <= m; ++i) {
+        const double dW = W[i] - W[i - 1];
+        row[i] = row[i - 1] * exp(drift * dt + v * dW);
+    }
 }
 
-// Host-side launcher for QMC kernel
+// Host-side launcher for the QMC backend.
 double price_american_call_qmc_cuda(const OptionParams& p,
                                      int threads_per_block,
                                      uint32_t seed)
@@ -97,22 +83,21 @@ double price_american_call_qmc_cuda(const OptionParams& p,
                 p.m, CUDA_QMC_MAX_M);
         return 0.0;
     }
+    if (p.N <= 0 || threads_per_block <= 0) return 0.0;
 
-    // Direction numbers
+    // Direction numbers, built exactly as SobolGenerator does on the host.
     unsigned int V_host[GPU_SOBOL_DIM][GPU_SOBOL_BITS];
-    for (int k = 0; k < 32; ++k) {
-        V_host[0][k] = 1u << (31 - k);
-    }
-    
+    for (int k = 0; k < GPU_SOBOL_BITS; ++k) V_host[0][k] = 1u << (31 - k);
+
     for (int dim = 1; dim < GPU_SOBOL_DIM; ++dim) {
         const SobolInitData& init = SOBOL_INIT[dim - 1];
-        int s = init.s;
-        uint32_t a = init.a;
+        const int s = init.s;
+        const uint32_t a = init.a;
 
         for (int k = 0; k < s; ++k)
             V_host[dim][k] = init.m[k] << (31 - k);
 
-        for (int k = s; k < 32; ++k) {
+        for (int k = s; k < GPU_SOBOL_BITS; ++k) {
             V_host[dim][k] = V_host[dim][k - s] ^ (V_host[dim][k - s] >> s);
             for (int l = 1; l < s; ++l) {
                 if ((a >> (s - 1 - l)) & 1u)
@@ -120,67 +105,59 @@ double price_american_call_qmc_cuda(const OptionParams& p,
             }
         }
     }
-
     sobol_gpu_init(V_host);
-
     unsigned int* d_dir_ptr = get_d_V_ptr();
 
-    auto shifts_vec = make_digital_shift(p.m, seed);
-    unsigned int* d_shift = nullptr;
-    cudaMalloc(&d_shift, p.m * sizeof(unsigned int));
-    cudaMemcpy(d_shift, shifts_vec.data(), p.m * sizeof(unsigned int), cudaMemcpyHostToDevice);
+    const int    stride = p.m + 1;
+    const double dt     = p.T / static_cast<double>(p.m + 1);
 
-    double dt = p.T / static_cast<double>(p.m + 1);
-    auto bridge = build_brownian_bridge(p.m, dt);
-    
+    // Same digital shift the host backend uses, so the point sets match.
+    const std::vector<uint32_t> shifts_vec = make_digital_shift(p.m, seed);
+    const std::vector<BBNode> bridge = build_brownian_bridge(p.m, dt);
+
     std::vector<double> bb_wl(p.m), bb_wr(p.m), bb_std(p.m);
     std::vector<int> bb_mid(p.m), bb_left(p.m), bb_right(p.m);
     for (int i = 0; i < p.m; ++i) {
-        bb_wl[i] = bridge[i].w_l;
-        bb_wr[i] = bridge[i].w_r;
-        bb_std[i] = bridge[i].std;
-        bb_mid[i] = bridge[i].mid;
-        bb_left[i] = bridge[i].left;
+        bb_wl[i]    = bridge[i].w_l;
+        bb_wr[i]    = bridge[i].w_r;
+        bb_std[i]   = bridge[i].std;
+        bb_mid[i]   = bridge[i].mid;
+        bb_left[i]  = bridge[i].left;
         bb_right[i] = bridge[i].right;
     }
 
-    double *d_bb_wl, *d_bb_wr, *d_bb_std;
-    int *d_bb_mid, *d_bb_left, *d_bb_right;
-    cudaMalloc(&d_bb_wl, p.m * sizeof(double));
-    cudaMalloc(&d_bb_wr, p.m * sizeof(double));
-    cudaMalloc(&d_bb_std, p.m * sizeof(double));
-    cudaMalloc(&d_bb_mid, p.m * sizeof(int));
-    cudaMalloc(&d_bb_left, p.m * sizeof(int));
-    cudaMalloc(&d_bb_right, p.m * sizeof(int));
+    unsigned int* d_shift = nullptr;
+    double *d_bb_wl = nullptr, *d_bb_wr = nullptr, *d_bb_std = nullptr;
+    int *d_bb_mid = nullptr, *d_bb_left = nullptr, *d_bb_right = nullptr;
+    double* d_S = nullptr;
 
-    cudaMemcpy(d_bb_wl, bb_wl.data(), p.m * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bb_wr, bb_wr.data(), p.m * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bb_std, bb_std.data(), p.m * sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bb_mid, bb_mid.data(), p.m * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bb_left, bb_left.data(), p.m * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_bb_right, bb_right.data(), p.m * sizeof(int), cudaMemcpyHostToDevice);
+    CUDA_TRY(cudaMalloc(&d_shift,    p.m * sizeof(unsigned int)));
+    CUDA_TRY(cudaMalloc(&d_bb_wl,    p.m * sizeof(double)));
+    CUDA_TRY(cudaMalloc(&d_bb_wr,    p.m * sizeof(double)));
+    CUDA_TRY(cudaMalloc(&d_bb_std,   p.m * sizeof(double)));
+    CUDA_TRY(cudaMalloc(&d_bb_mid,   p.m * sizeof(int)));
+    CUDA_TRY(cudaMalloc(&d_bb_left,  p.m * sizeof(int)));
+    CUDA_TRY(cudaMalloc(&d_bb_right, p.m * sizeof(int)));
+    CUDA_TRY(cudaMalloc(&d_S, static_cast<size_t>(p.N) * stride * sizeof(double)));
 
-    int blocks = (p.N + threads_per_block - 1) / threads_per_block;
-    int shared  = (threads_per_block / 32) * sizeof(double);
+    CUDA_TRY(cudaMemcpy(d_shift, shifts_vec.data(), p.m * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_wl,    bb_wl.data(),    p.m * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_wr,    bb_wr.data(),    p.m * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_std,   bb_std.data(),   p.m * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_mid,   bb_mid.data(),   p.m * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_left,  bb_left.data(),  p.m * sizeof(int), cudaMemcpyHostToDevice));
+    CUDA_TRY(cudaMemcpy(d_bb_right, bb_right.data(), p.m * sizeof(int), cudaMemcpyHostToDevice));
 
-    double* d_result = nullptr;
-    cudaMalloc(&d_result, blocks * sizeof(double));
-    cudaMemset(d_result, 0, blocks * sizeof(double));
-
-    american_option_qmc_kernel<<<blocks, threads_per_block, shared>>>(
-        d_result, d_shift, d_dir_ptr,
+    const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
+    gen_paths_qmc_kernel<<<blocks, threads_per_block>>>(
+        d_S, d_shift, d_dir_ptr,
         d_bb_wl, d_bb_wr, d_bb_std, d_bb_mid, d_bb_left, d_bb_right,
-        p.S0, p.X, p.T, p.r, p.v, p.m, p.N
-    );
-    cudaDeviceSynchronize();
+        p.S0, p.r, p.v, dt, p.m, stride, p.N);
+    CUDA_TRY_KERNEL();
 
-    std::vector<double> h_result(blocks);
-    cudaMemcpy(h_result.data(), d_result, blocks * sizeof(double), cudaMemcpyDeviceToHost);
+    const double price = lsm_price_device(d_S, p, threads_per_block);
 
-    double total = 0.0;
-    for (double v : h_result) total += v;
-
-    cudaFree(d_result);
+    cudaFree(d_S);
     cudaFree(d_shift);
     cudaFree(d_bb_wl);
     cudaFree(d_bb_wr);
@@ -189,6 +166,5 @@ double price_american_call_qmc_cuda(const OptionParams& p,
     cudaFree(d_bb_left);
     cudaFree(d_bb_right);
 
-    // american_call_path_value() already discounts to t = 0.
-    return total / static_cast<double>(p.N);
+    return price;
 }

@@ -67,6 +67,9 @@ find_package(OpenMP)
 # Source files.
 set(CORE_SRC
     src/core/black_scholes.cpp
+    src/core/binomial.cpp
+    src/core/lsm.cpp
+    src/core/paths.cpp
     src/core/moro_inv_cnd.cpp
     src/core/brownian_bridge.cpp
     src/core/scramble.cpp
@@ -78,6 +81,7 @@ set(CORE_SRC
 set(CUDA_SRC
     src/cuda/american_option.cu
     src/cuda/american_option_qmc.cu
+    src/cuda/lsm_gpu.cu
     src/cuda/sobol_gpu.cu
 )
 
@@ -155,6 +159,11 @@ if(HAVE_CUDA)
     )
     target_include_directories(run_cuda_tests PRIVATE src ${CMAKE_SOURCE_DIR})
     target_link_libraries(run_cuda_tests PRIVATE gtest_main CUDA::cudart)
+    if(OpenMP_CXX_FOUND)
+        # Needed for the GPU-vs-host QMC comparison.
+        target_sources(run_cuda_tests PRIVATE src/openmp/american_option_qmc_omp.cpp)
+        target_link_libraries(run_cuda_tests PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     # GoogleTest is built with CMAKE_CXX_COMPILER, which may be newer than
     # nvcc's host compiler. Link with the C++ driver so the newer libstdc++ is
     # used; we do not use separable compilation, so no device link step is

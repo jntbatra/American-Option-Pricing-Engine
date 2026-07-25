@@ -18,29 +18,13 @@
 //   over paths and NOT apply a further exp(-r*T) -- doing both was worth about
 //   a 4.5% under-price at m = 10.
 //
-// NOTE: this is still the naive per-path recursion from Cvetanoska &
-// Stojanovski, which exercises with knowledge of its own future and is
-// therefore biased high. Replacing it with Longstaff-Schwartz is tracked
-// separately; the interface here is what LSM will slot into.
+// NOTE: this is the naive per-path recursion from Cvetanoska & Stojanovski,
+// which exercises with knowledge of its own future and is therefore biased
+// high -- see the diagnostic table printed by `validate`. It is retained only
+// so the bias can be measured against the real pricer. Production pricing goes
+// through Longstaff-Schwartz in core/lsm.hpp.
 
-#if defined(__CUDACC__)
-  #define MC_HD __host__ __device__
-#else
-  #define MC_HD
-#endif
-
-MC_HD inline double mc_max(double a, double b) { return a > b ? a : b; }
-
-// Black-Scholes call, callable from host and device.
-MC_HD inline double mc_bs_call(double S, double X, double t, double v, double r) {
-    if (t <= 0.0) return mc_max(S - X, 0.0);
-    const double sqrt_t = sqrt(t);
-    const double d1 = (log(S / X) + (r + 0.5 * v * v) * t) / (v * sqrt_t);
-    const double d2 = d1 - v * sqrt_t;
-    const double cnd1 = 0.5 * erfc(-d1 * 0.70710678118654752440);
-    const double cnd2 = 0.5 * erfc(-d2 * 0.70710678118654752440);
-    return S * cnd1 - X * exp(-r * t) * cnd2;
-}
+#include "hd_math.hpp"
 
 // Values one simulated path S[0..m] and returns its contribution discounted to
 // t = 0. `discount` must equal exp(-r*dt).

@@ -4,10 +4,12 @@
 
 #include "core/math_utils.hpp"
 #include "core/black_scholes.hpp"
+#include "core/binomial.hpp"
 #include "cuda/american_cuda.h"
 #include "tests/kernel_helpers.h"
 
 double price_american_call_serial(const OptionParams&);
+double price_american_call_qmc_omp(const OptionParams&, int, uint32_t);
 
 static OptionParams reference_case(int m, int N) {
     OptionParams p;
@@ -101,15 +103,44 @@ TEST(CudaPricing, RejectsOutOfRangeM) {
 }
 
 // ---------------------------------------------------------------
-// Acceptance test, currently expected to fail: an American call on a
-// non-dividend-paying stock is worth exactly its European counterpart. The
-// naive per-path recursion exercises with perfect foresight and prices it far
-// too high. Enable this once Longstaff-Schwartz replaces the recursion.
-TEST(CudaPricing, DISABLED_EqualsEuropeanForNonDividendCall) {
+// An American call on a non-dividend-paying stock is worth exactly its
+// European counterpart, because early exercise is never optimal. Any gap is
+// bias or bug and does not shrink with N.
+TEST(CudaPricing, EqualsEuropeanForNonDividendCall) {
     OptionParams p = reference_case(10, 500000);
 
     double gpu      = price_american_call_cuda(p, 512);
     double european = bs_call(p.S0, p.X, p.T, p.v, p.r);
 
-    EXPECT_NEAR(gpu, european, 0.05);
+    EXPECT_NEAR(gpu, european, 0.05) << "gpu=" << gpu << " bs=" << european;
+}
+
+// ---------------------------------------------------------------
+// The put is what actually exercises the LSM boundary. Checked against the
+// binomial tree restricted to the same m exercise dates, so both price the
+// identical Bermudan contract.
+TEST(CudaPricing, PutMatchesBinomialTree) {
+    OptionParams p = reference_case(20, 500000);
+    p.type = OPTION_PUT;
+
+    double gpu       = price_american_call_cuda(p, 512);
+    double reference = binomial_bermudan(p, 250);
+
+    // LSM is low-biased, so allow more room below than above.
+    EXPECT_LT(gpu - reference,  0.05) << "gpu=" << gpu << " tree=" << reference;
+    EXPECT_GT(gpu - reference, -0.20) << "gpu=" << gpu << " tree=" << reference;
+}
+
+// ---------------------------------------------------------------
+// Both QMC backends now draw the same Sobol points in double precision and run
+// the same bridge, so they must agree far more tightly than two independent
+// estimators would. A gap here means the GPU Sobol, the GPU bridge, or the
+// device LSM has diverged from its host counterpart.
+TEST(CudaPricing, QmcMatchesHostQmc) {
+    OptionParams p = reference_case(10, 200000);
+
+    double gpu = price_american_call_qmc_cuda(p, 256, 42);
+    double cpu = price_american_call_qmc_omp(p, 0, 42);
+
+    EXPECT_NEAR(gpu, cpu, 1e-6) << "gpu=" << gpu << " cpu=" << cpu;
 }
