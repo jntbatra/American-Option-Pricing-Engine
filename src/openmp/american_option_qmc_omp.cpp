@@ -4,6 +4,7 @@
 #include "core/black_scholes.hpp"
 #include "core/lsm.hpp"
 #include "core/brownian_bridge.hpp"
+#include "core/backends.hpp"
 #include "core/math_utils.hpp"
 #include <omp.h>
 #include <vector>
@@ -12,8 +13,9 @@
 #include <cstdint>
 
 double price_american_call_qmc_omp(const OptionParams& p,
-                                    int num_threads = 0,
-                                    uint32_t seed   = 42)
+                                    int num_threads,
+                                    uint32_t seed,
+                                    double* out_stderr)
 {
     if (num_threads > 0) omp_set_num_threads(num_threads);
 
@@ -51,5 +53,5 @@ double price_american_call_qmc_omp(const OptionParams& p,
                          &S[static_cast<size_t>(n) * stride]);
     }
 
-    return lsm_price_from_paths(S.data(), p.N, p);
+    return lsm_price_from_paths(S.data(), p.N, p, out_stderr);
 }

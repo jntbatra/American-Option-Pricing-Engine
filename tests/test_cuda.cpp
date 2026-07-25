@@ -8,8 +8,8 @@
 #include "cuda/american_cuda.h"
 #include "tests/kernel_helpers.h"
 
-double price_american_call_serial(const OptionParams&);
-double price_american_call_qmc_omp(const OptionParams&, int, uint32_t);
+#include "core/backends.hpp"
+
 
 static OptionParams reference_case(int m, int N) {
     OptionParams p;

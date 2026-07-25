@@ -72,7 +72,12 @@ inline double option_intrinsic(int type, double S, double X) {
 //   S : N x (m+1) doubles, point-major -- S[n*(m+1) + i] is path n at time i*dt.
 // Returns the price discounted to t = 0.
 //
+// When `out_stderr` is non-null it receives the standard error of the estimate,
+// sd(discounted cashflow)/sqrt(N). A price quoted without it is unfalsifiable:
+// there is no way to tell a converged result from a noisy one.
+//
 // Compiled once and used by both the serial and OpenMP backends: the loops
 // carry OpenMP pragmas, which the serial target simply ignores because it is
 // built without -fopenmp.
-double lsm_price_from_paths(const double* S, int N, const OptionParams& p);
+double lsm_price_from_paths(const double* S, int N, const OptionParams& p,
+                            double* out_stderr = nullptr);

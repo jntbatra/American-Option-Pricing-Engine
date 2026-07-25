@@ -4,15 +4,16 @@
 #include "../core/paths.hpp"
 #include "../core/quasi_rng.hpp"
 #include "../core/moro_inv_cnd.hpp"
+#include "../core/backends.hpp"
 #include "../core/math_utils.hpp"
 #include <vector>
 #include <cmath>
 #include <cstdint>
 
-double price_american_call_serial(const OptionParams& p) {
+double price_american_call_serial(const OptionParams& p, double* out_stderr) {
     std::vector<double> S;
     simulate_paths_lcg(p, S);
-    return lsm_price_from_paths(S.data(), p.N, p);
+    return lsm_price_from_paths(S.data(), p.N, p, out_stderr);
 }
 
 // The original per-path recursion from Cvetanoska & Stojanovski, kept so the

@@ -5,6 +5,7 @@
 #include "../core/math_utils.hpp"
 #include "american_cuda.h"
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 
@@ -35,7 +36,10 @@ __global__ void gen_paths_lcg_kernel(
 }
 
 // ---------------- Host launcher ----------------
-double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
+double price_american_call_cuda(const OptionParams& p, int threads_per_block,
+                                double* out_stderr, CudaTiming* timing) {
+    if (out_stderr) *out_stderr = 0.0;
+
     if (p.m < 1 || p.m > CUDA_MAX_M) {
         fprintf(stderr, "price_american_call_cuda: m=%d out of range (1..%d)\n",
                 p.m, CUDA_MAX_M);
@@ -48,16 +52,39 @@ double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
     const double drift    = (p.r - 0.5 * p.v * p.v) * dt;
     const double vol_sqdt = p.v * std::sqrt(dt);
 
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
     double* d_S = nullptr;
     const size_t bytes = static_cast<size_t>(p.N) * stride * sizeof(double);
     CUDA_TRY(cudaMalloc(&d_S, bytes));
+
+    const auto t_setup = std::chrono::high_resolution_clock::now();
+
+    cudaEvent_t ev_begin, ev_end;
+    CUDA_TRY(cudaEventCreate(&ev_begin));
+    CUDA_TRY(cudaEventCreate(&ev_end));
+    CUDA_TRY(cudaEventRecord(ev_begin));
 
     const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
     gen_paths_lcg_kernel<<<blocks, threads_per_block>>>(
         d_S, p.S0, drift, vol_sqdt, p.m, stride, p.N);
     CUDA_TRY_KERNEL();
 
-    const double price = lsm_price_device(d_S, p, threads_per_block);
+    const double price = lsm_price_device(d_S, p, threads_per_block, out_stderr);
+
+    CUDA_TRY(cudaEventRecord(ev_end));
+    CUDA_TRY(cudaEventSynchronize(ev_end));
+
+    if (timing) {
+        float kernel_ms = 0.0f;
+        cudaEventElapsedTime(&kernel_ms, ev_begin, ev_end);
+        const auto t_end = std::chrono::high_resolution_clock::now();
+        timing->setup_ms  = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
+        timing->kernel_ms = kernel_ms;
+        timing->total_ms  = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    }
+    cudaEventDestroy(ev_begin);
+    cudaEventDestroy(ev_end);
 
     cudaFree(d_S);
     return price;

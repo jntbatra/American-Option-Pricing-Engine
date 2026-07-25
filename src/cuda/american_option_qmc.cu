@@ -9,6 +9,7 @@
 #include "../core/brownian_bridge.hpp"
 #include "../core/sobol_joe_kuo.hpp"
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstdio>
 #include <vector>
 #include <cmath>
@@ -70,8 +71,12 @@ __global__ void gen_paths_qmc_kernel(
 // Host-side launcher for the QMC backend.
 double price_american_call_qmc_cuda(const OptionParams& p,
                                      int threads_per_block,
-                                     uint32_t seed)
+                                     uint32_t seed,
+                                     double* out_stderr,
+                                     CudaTiming* timing)
 {
+    if (out_stderr) *out_stderr = 0.0;
+
     // The kernel holds the Sobol point, the bridge and the path in fixed-size
     // per-thread arrays sized by GPU_SOBOL_DIM, and the direction-number table
     // only has that many dimensions. Larger m would smash the stack silently.
@@ -84,6 +89,8 @@ double price_american_call_qmc_cuda(const OptionParams& p,
         return 0.0;
     }
     if (p.N <= 0 || threads_per_block <= 0) return 0.0;
+
+    const auto t_start = std::chrono::high_resolution_clock::now();
 
     // Direction numbers, built exactly as SobolGenerator does on the host.
     unsigned int V_host[GPU_SOBOL_DIM][GPU_SOBOL_BITS];
@@ -148,6 +155,13 @@ double price_american_call_qmc_cuda(const OptionParams& p,
     CUDA_TRY(cudaMemcpy(d_bb_left,  bb_left.data(),  p.m * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_TRY(cudaMemcpy(d_bb_right, bb_right.data(), p.m * sizeof(int), cudaMemcpyHostToDevice));
 
+    const auto t_setup = std::chrono::high_resolution_clock::now();
+
+    cudaEvent_t ev_begin, ev_end;
+    CUDA_TRY(cudaEventCreate(&ev_begin));
+    CUDA_TRY(cudaEventCreate(&ev_end));
+    CUDA_TRY(cudaEventRecord(ev_begin));
+
     const int blocks = (p.N + threads_per_block - 1) / threads_per_block;
     gen_paths_qmc_kernel<<<blocks, threads_per_block>>>(
         d_S, d_shift, d_dir_ptr,
@@ -155,7 +169,21 @@ double price_american_call_qmc_cuda(const OptionParams& p,
         p.S0, p.r, p.v, dt, p.m, stride, p.N);
     CUDA_TRY_KERNEL();
 
-    const double price = lsm_price_device(d_S, p, threads_per_block);
+    const double price = lsm_price_device(d_S, p, threads_per_block, out_stderr);
+
+    CUDA_TRY(cudaEventRecord(ev_end));
+    CUDA_TRY(cudaEventSynchronize(ev_end));
+
+    if (timing) {
+        float kernel_ms = 0.0f;
+        cudaEventElapsedTime(&kernel_ms, ev_begin, ev_end);
+        const auto t_end = std::chrono::high_resolution_clock::now();
+        timing->setup_ms  = std::chrono::duration<double, std::milli>(t_setup - t_start).count();
+        timing->kernel_ms = kernel_ms;
+        timing->total_ms  = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    }
+    cudaEventDestroy(ev_begin);
+    cudaEventDestroy(ev_end);
 
     cudaFree(d_S);
     cudaFree(d_shift);

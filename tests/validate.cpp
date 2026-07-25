@@ -16,11 +16,11 @@
 #include <omp.h>
 #endif
 
-double price_american_call_serial(const OptionParams&);
-double price_american_call_serial_naive(const OptionParams&);
+#include "core/backends.hpp"
+
 #ifdef HAVE_OPENMP
-double price_american_call_omp(const OptionParams&, int);
-double price_american_call_qmc_omp(const OptionParams&, int, uint32_t);
+
+
 #endif
 
 static int g_failures = 0;

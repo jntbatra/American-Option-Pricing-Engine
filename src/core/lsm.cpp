@@ -77,13 +77,17 @@ bool lsm_solve(const LsmNormalEq& eq, double* beta) {
 
 // ------------------------------------------------------------- backward pass
 
-double lsm_price_from_paths(const double* S, int N, const OptionParams& p) {
+double lsm_price_from_paths(const double* S, int N, const OptionParams& p,
+                            double* out_stderr) {
     const int    m        = p.m;
     const int    stride   = m + 1;
     const double dt       = p.T / static_cast<double>(m + 1);
     const double discount = std::exp(-p.r * dt);
 
-    if (N <= 0 || m < 1) return 0.0;
+    if (N <= 0 || m < 1) {
+        if (out_stderr) *out_stderr = 0.0;
+        return 0.0;
+    }
 
     // C[n] is path n's realised cashflow, always expressed as a value at the
     // exercise date currently being considered. Sweeping backwards, one
@@ -149,10 +153,25 @@ double lsm_price_from_paths(const double* S, int N, const OptionParams& p) {
         }
     }
 
-    double total = 0.0;
-    #pragma omp parallel for schedule(static) reduction(+ : total)
-    for (int n = 0; n < N; ++n) total += C[n];
+    // C is a value at node 1 (t = dt); one more factor reaches t = 0.
+    double total = 0.0, total_sq = 0.0;
+    #pragma omp parallel for schedule(static) reduction(+ : total, total_sq)
+    for (int n = 0; n < N; ++n) {
+        const double x = C[n] * discount;
+        total    += x;
+        total_sq += x * x;
+    }
 
-    // C is now a value at node 1 (t = dt); one more step reaches t = 0.
-    return (total / static_cast<double>(N)) * discount;
+    const double mean = total / static_cast<double>(N);
+    if (out_stderr) {
+        // Population variance of the per-path discounted cashflows, then the
+        // standard error of their mean. Clamped at zero because catastrophic
+        // cancellation in E[x^2] - E[x]^2 can go slightly negative when the
+        // payoff is nearly constant across paths.
+        const double var = total_sq / static_cast<double>(N) - mean * mean;
+        *out_stderr = (N > 1 && var > 0.0)
+                          ? std::sqrt(var / static_cast<double>(N - 1))
+                          : 0.0;
+    }
+    return mean;
 }

@@ -101,20 +101,30 @@ __global__ void lsm_decide(double* __restrict__ C,
 }
 
 // ---------------------------------------------------------------------------
+// Reduces both the sum and the sum of squares of the discounted cashflows, so
+// the caller can report a standard error alongside the price.
 __global__ void lsm_reduce_cashflows(const double* __restrict__ C,
-                                     double* __restrict__ block_sums, int N)
+                                     double* __restrict__ block_sums,
+                                     double discount, int N)
 {
     extern __shared__ double sdata[];
     int n = blockIdx.x * blockDim.x + threadIdx.x;
-    double val = (n < N) ? C[n] : 0.0;
-    double s = block_reduce_sum(val, sdata);
+    const double x = (n < N) ? C[n] * discount : 0.0;
+
+    double s = block_reduce_sum(x, sdata);
     if (threadIdx.x == 0) block_sums[blockIdx.x] = s;
+
+    __syncthreads();
+    double sq = block_reduce_sum(x * x, sdata);
+    if (threadIdx.x == 0) block_sums[gridDim.x + blockIdx.x] = sq;
 }
 
 // ---------------------------------------------------------------------------
 double lsm_price_device(const double* d_S, const OptionParams& p,
-                        int threads_per_block)
+                        int threads_per_block, double* out_stderr)
 {
+    if (out_stderr) *out_stderr = 0.0;
+
     const int    N        = p.N;
     const int    m        = p.m;
     const int    stride   = m + 1;
@@ -173,23 +183,35 @@ double lsm_price_device(const double* d_S, const OptionParams& p,
         CUDA_TRY_KERNEL();
     }
 
+    // Two halves: block sums, then block sums of squares.
     double* d_sums = nullptr;
-    CUDA_TRY(cudaMalloc(&d_sums, static_cast<size_t>(blocks) * sizeof(double)));
+    CUDA_TRY(cudaMalloc(&d_sums, static_cast<size_t>(blocks) * 2 * sizeof(double)));
 
-    lsm_reduce_cashflows<<<blocks, threads_per_block, shmem>>>(d_C, d_sums, N);
+    lsm_reduce_cashflows<<<blocks, threads_per_block, shmem>>>(
+        d_C, d_sums, discount, N);
     CUDA_TRY_KERNEL();
 
-    std::vector<double> h_sums(blocks);
+    std::vector<double> h_sums(static_cast<size_t>(blocks) * 2);
     CUDA_TRY(cudaMemcpy(h_sums.data(), d_sums, h_sums.size() * sizeof(double),
                         cudaMemcpyDeviceToHost));
 
-    double total = 0.0;
-    for (double x : h_sums) total += x;
+    double total = 0.0, total_sq = 0.0;
+    for (int b = 0; b < blocks; ++b) {
+        total    += h_sums[b];
+        total_sq += h_sums[blocks + b];
+    }
 
     cudaFree(d_sums);
     cudaFree(d_stats);
     cudaFree(d_C);
 
-    // C is a value at node 1 (t = dt); one more step reaches t = 0.
-    return (total / static_cast<double>(N)) * discount;
+    const double mean = total / static_cast<double>(N);
+    if (out_stderr) {
+        const double var = total_sq / static_cast<double>(N) - mean * mean;
+        *out_stderr = (N > 1 && var > 0.0)
+                          ? std::sqrt(var / static_cast<double>(N - 1))
+                          : 0.0;
+    }
+    // The discount to t = 0 is applied inside the reduction kernel.
+    return mean;
 }

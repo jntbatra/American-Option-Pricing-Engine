@@ -10,10 +10,27 @@
 static const int CUDA_MAX_M     = 63;
 static const int CUDA_QMC_MAX_M = 21;
 
+// Optional breakdown of where GPU wall-clock actually goes.
+//
+// Quoting the whole launcher call as "GPU time" overstates the kernel cost
+// badly at small N, because setup -- allocating the path buffer, building and
+// uploading Sobol direction numbers and the Brownian bridge -- is redone on
+// every call and dominates until N gets large. Kernel time is measured with
+// cudaEvents around the device work only.
+struct CudaTiming {
+    double setup_ms  = 0.0;  // allocation + host-to-device transfers
+    double kernel_ms = 0.0;  // path generation + LSM backward pass
+    double total_ms  = 0.0;  // everything the launcher does
+};
+
 // Standard pseudo-random CUDA (LCG)
-double price_american_call_cuda(const OptionParams& p, int threads_per_block);
+double price_american_call_cuda(const OptionParams& p, int threads_per_block,
+                                double* out_stderr = nullptr,
+                                CudaTiming* timing = nullptr);
 
 // QMC CUDA (Sobol + Brownian Bridge)
 double price_american_call_qmc_cuda(const OptionParams& p,
                                     int threads_per_block,
-                                    unsigned int seed);
+                                    unsigned int seed,
+                                    double* out_stderr = nullptr,
+                                    CudaTiming* timing = nullptr);
