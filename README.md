@@ -15,10 +15,14 @@ prices are validated against two independent references:
 
 | check | result |
 | --- | --- |
-| Call on non-dividend stock vs Black-Scholes (exact) | 10.4502 vs 10.4506 |
+| Call on non-dividend stock vs Black-Scholes (exact) | error `+1.4e-5` at N=10⁶ (QMC) |
 | American put vs binomial tree, same exercise dates | within 0.14% across four cases |
 | GPU QMC vs host QMC | agree to 1e-6 |
 | OpenMP at 1 thread vs 28 threads | agree to 2.8e-13 |
+
+**[→ Full benchmark report with charts](docs/benchmark-results.html)** — a
+self-contained HTML page, no build step and no network access needed; open it
+straight from disk. Raw harness output is in [`docs/results/`](docs/results/).
 
 ## Algorithm
 
@@ -177,16 +181,61 @@ QMC backends, the put against the tree, and that out-of-range `m` is rejected.
 ./build/cuda_benchmark      # both GPU backends in one run
 ```
 
-Each prints a table over `N ∈ {10, 100, 1k, 10k, 100k, 200k, 300k, 500k, 1M}`
-paths with timing and price.
+Pass `put` as the first argument to price a put instead of a call. Each target
+prints price, standard error, signed error against the exact reference where one
+exists, and the median wall-clock of five runs after a warmup. GPU targets
+additionally split setup from kernel time, measured with `cudaEvent` around
+device work only.
 
-> The reported GPU times currently include per-call setup (direction-number
-> construction, seven `cudaMalloc`s, a `cudaMemcpyToSymbol`) because the host
-> launcher does all of it on every invocation. They are not kernel times. Hoist
-> the setup and time with `cudaEvent` before quoting any speedup.
+### Results
+
+Measured on an Intel i7-14700HX (20C/28T) and an RTX 5060 Laptop, CUDA 12.4.
+Contract `S₀ = X = 100, T = 1, r = 5%, σ = 20%, m = 20`; exact Black-Scholes
+price **10.450584**.
+
+| Backend | Price @ 10⁶ | Error | Time | vs serial |
+| --- | ---: | ---: | ---: | ---: |
+| Serial (LCG) | 10.451341 | `+0.000757` | 809.3 ms | 1.00× |
+| OpenMP (LCG) | 10.451341 | `+0.000757` | 142.8 ms | 5.67× |
+| OpenMP QMC | 10.450597 | `+0.000014` | 295.1 ms | 2.74× |
+| CUDA (LCG) | 10.451341 | `+0.000757` | 42.1 ms | **19.21×** |
+| CUDA QMC | 10.450597 | `+0.000014` | 46.4 ms | 17.44× |
+
+Convergence, absolute error against the exact price:
+
+| N | LCG | Sobol QMC |
+| ---: | ---: | ---: |
+| 1,000 | 2.4e-01 | 1.3e-02 |
+| 10,000 | 9.2e-02 | 3.9e-03 |
+| 100,000 | 1.2e-02 | 2.8e-04 |
+| 1,000,000 | 7.6e-04 | 1.4e-05 |
+
+QMC reaches three-decimal accuracy at 100,000 paths, where the pseudo-random
+backends need 1,000,000 — about 8× less work for the same answer.
+
+> **The GPU is handicapped in these numbers.** The RTX 5060 runs FP64 at 1/64 the
+> FP32 rate, and CUDA 12.4 has no native sm_120 target so kernels arrive by PTX
+> JIT from sm_80. Everything on the device is deliberately double precision to
+> keep CPU/GPU agreement testable. Expect a very different speedup column on a
+> datacenter part with full-rate FP64.
+
+> **Setup is not the bottleneck it was assumed to be.** Splitting the timers
+> showed the LCG launcher spends 0.03–0.5 ms in setup (one `cudaMalloc`), while
+> the QMC launcher spends ~0.1 ms — the direction-number rebuild is cheap at
+> these sizes. Below ~10⁴ paths both GPU backends are dominated instead by 38
+> kernel launches and 19 host round trips for the per-timestep regression solves.
 
 ## Notes
 
+- **The standard-error column does not apply to QMC.** `sd/√N` assumes
+  independent draws, and a Sobol sequence is deterministic and correlated by
+  construction. At N=10⁶ the QMC backends report a standard error of 0.0143
+  while their actual error is 0.000014 — a thousandfold overstatement. The QMC
+  targets print this warning at run time. A real QMC error bar needs randomised
+  QMC: average over several independent digital shifts and take the standard
+  deviation of the means. Not yet implemented.
+- **LSM is low-biased**, so it converges from below and a true confidence
+  interval needs a paired upper bound (Andersen-Broadie dual). Not implemented.
 - **Memory.** LSM regresses across paths at each exercise date, so the whole
   path set must be resident: `N × (m+1)` doubles, about 176 MB at `N = 1e6,
   m = 21`. The naive recursion could consume one path at a time; this cannot.

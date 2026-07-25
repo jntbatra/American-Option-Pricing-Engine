@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Monte-Carlo-cuda benchmark harness">
+<title>American Option Pricing on GPU — Benchmark Results</title>
+
+<style>
+  :root {
+    color-scheme: light;
+    --paper:   #f6f7f9;
+    --panel:   #ffffff;
+    --ink:     #14171c;
+    --muted:   #5b6472;
+    --faint:   #858e9c;
+    --rule:    #dde1e7;
+    --rule-hi: #c3cad4;
+    --accent:  #1f4e9c;
+    --accent-soft: #e7edf8;
+    --good:    #1a7f52;
+    --bad:     #b03a2e;
+
+    --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --s4: #eda100;  --s5: #e87ba4;
+
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+            "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono",
+            "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --paper:   #131519;
+      --panel:   #1b1e24;
+      --ink:     #eaeef3;
+      --muted:   #949daa;
+      --faint:   #6d7783;
+      --rule:    #2b3038;
+      --rule-hi: #3c434e;
+      --accent:  #83aae8;
+      --accent-soft: #1d2735;
+      --good:    #48b487;
+      --bad:     #e0705f;
+      --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;  --s5: #d55181;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper:   #131519;
+    --panel:   #1b1e24;
+    --ink:     #eaeef3;
+    --muted:   #949daa;
+    --faint:   #6d7783;
+    --rule:    #2b3038;
+    --rule-hi: #3c434e;
+    --accent:  #83aae8;
+    --accent-soft: #1d2735;
+    --good:    #48b487;
+    --bad:     #e0705f;
+    --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;  --s5: #d55181;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wrap {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: clamp(2rem, 5vw, 4.5rem) clamp(1rem, 4vw, 3rem) 6rem;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead { border-bottom: 2px solid var(--ink); padding-bottom: 1.5rem; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-size: clamp(1.9rem, 4.6vw, 3.1rem);
+    line-height: 1.04;
+    letter-spacing: -0.032em;
+    font-weight: 780;
+    margin: 0 0 0.9rem;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(1rem, 1.6vw, 1.16rem);
+    color: var(--muted);
+    max-width: 66ch;
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 640; }
+
+  .rig {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.6rem;
+    margin-top: 1.6rem;
+    font-family: var(--mono);
+    font-size: 0.735rem;
+    color: var(--muted);
+  }
+  .rig span { white-space: nowrap; }
+  .rig b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- section scaffolding ---------- */
+  section { margin-top: clamp(2.75rem, 6vw, 4.25rem); }
+  .sec-head {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.35rem;
+    border-top: 1px solid var(--rule-hi);
+    padding-top: 1.1rem;
+    margin-bottom: 1.5rem;
+  }
+  @media (min-width: 900px) {
+    .sec-head { grid-template-columns: 150px 1fr; gap: 0 2rem; align-items: start; }
+    .sec-head .marker { padding-top: 0.42rem; }
+  }
+  .marker {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  h2 {
+    font-size: clamp(1.35rem, 2.6vw, 1.85rem);
+    letter-spacing: -0.022em;
+    font-weight: 720;
+    margin: 0;
+    line-height: 1.18;
+    text-wrap: balance;
+  }
+  .sec-head p { grid-column: -2 / -1; margin: 0.55rem 0 0; color: var(--muted); max-width: 68ch; }
+
+  h3 {
+    font-size: 0.95rem;
+    font-weight: 680;
+    letter-spacing: -0.005em;
+    margin: 0 0 0.25rem;
+  }
+  p { margin: 0 0 1rem; max-width: 70ch; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+
+  /* ---------- stat tiles ---------- */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    margin: 1.75rem 0 0;
+  }
+  .tile { background: var(--panel); padding: 1.15rem 1.25rem 1.25rem; }
+  .tile .k {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 0.6rem;
+  }
+  .tile .v {
+    font-family: var(--mono);
+    font-size: clamp(1.45rem, 3vw, 1.85rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    display: block;
+  }
+  .tile .sub { font-size: 0.79rem; color: var(--muted); margin-top: 0.5rem; display: block; line-height: 1.45; }
+
+  /* ---------- panels & charts ---------- */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    padding: 1.35rem 1.4rem 1.15rem;
+    margin: 1.5rem 0;
+  }
+  .panel-head { margin-bottom: 1rem; }
+  .panel-head .cap { font-size: 0.855rem; color: var(--muted); margin-top: 0.2rem; max-width: 74ch; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.15rem;
+    margin: 0 0 0.85rem;
+    font-family: var(--mono);
+    font-size: 0.735rem;
+    color: var(--muted);
+  }
+  .legend i {
+    width: 22px; height: 3px; border-radius: 2px;
+    display: inline-block; vertical-align: middle; margin-right: 0.45rem;
+  }
+  .legend span { white-space: nowrap; }
+
+  .chart-box { position: relative; width: 100%; overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; }
+  .grid-line { stroke: var(--rule); stroke-width: 1; }
+  .axis-line { stroke: var(--rule-hi); stroke-width: 1; }
+  .tick {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    fill: var(--faint);
+  }
+  .axis-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    fill: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .dlabel {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .hit { fill: transparent; cursor: crosshair; }
+
+  .tip {
+    position: absolute;
+    pointer-events: none;
+    opacity: 0;
+    transform: translate(-50%, -120%);
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    padding: 0.45rem 0.6rem;
+    white-space: pre;
+    border-radius: 3px;
+    transition: opacity 90ms linear;
+    z-index: 5;
+  }
+  .tip.on { opacity: 1; }
+
+  /* ---------- tables ---------- */
+  .tbl-wrap { overflow-x: auto; margin: 1.25rem 0; border: 1px solid var(--rule); background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.83rem; }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    padding: 0.9rem 1rem 0.7rem;
+  }
+  th, td { padding: 0.5rem 1rem; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule-hi);
+  }
+  tbody td { border-bottom: 1px solid var(--rule); font-family: var(--mono); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--accent-soft); }
+  .num-good { color: var(--good); }
+  .num-bad  { color: var(--bad); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 0.5rem; vertical-align: baseline; }
+
+  .verdict {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.12rem 0.42rem;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+  }
+  .verdict.pass { color: var(--good); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 1rem 1.2rem;
+    margin: 1.5rem 0;
+  }
+  .callout h3 { margin-bottom: 0.35rem; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout p { max-width: 76ch; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--accent-soft);
+    padding: 0.08em 0.32em;
+    border-radius: 2px;
+  }
+
+  ul { max-width: 72ch; padding-left: 1.1rem; }
+  li { margin-bottom: 0.5rem; }
+
+  footer {
+    margin-top: 4rem;
+    border-top: 1px solid var(--rule-hi);
+    padding-top: 1.25rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--faint);
+  }
+
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Benchmark report · 25 July 2026</p>
+    <h1>American option pricing on GPU</h1>
+    <p class="standfirst">
+      Five backends — serial, OpenMP, CUDA, and quasi-Monte&nbsp;Carlo variants of the
+      last two — pricing Bermudan options by Longstaff-Schwartz. After replacing the
+      source paper's per-path recursion, the pricer agrees with the exact
+      Black-Scholes value to <strong>1.4&nbsp;×&nbsp;10<sup>−5</sup></strong>, where the
+      original method was <strong>56% high</strong>.
+    </p>
+    <div class="rig">
+      <span><b>CPU</b> Intel i7-14700HX · 20C/28T</span>
+      <span><b>GPU</b> RTX 5060 Laptop · sm_120</span>
+      <span><b>CUDA</b> 12.4 · PTX JIT from sm_80</span>
+      <span><b>Contract</b> S₀=X=100, T=1, r=5%, σ=20%, m=20</span>
+    </div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile">
+      <span class="k">Exact price</span>
+      <span class="v">10.450584</span>
+      <span class="sub">Black-Scholes. An American call on a non-dividend stock is worth exactly its European counterpart.</span>
+    </div>
+    <div class="tile">
+      <span class="k">QMC error @ 1M</span>
+      <span class="v" style="color:var(--good)">+0.000014</span>
+      <span class="sub">Sobol + Brownian bridge. LCG reaches +0.000757 for the same path count.</span>
+    </div>
+    <div class="tile">
+      <span class="k">GPU speedup</span>
+      <span class="v">19.2×</span>
+      <span class="sub">CUDA vs serial at N=10⁶. Against 28-thread OpenMP it is 3.4×.</span>
+    </div>
+    <div class="tile">
+      <span class="k">Put vs binomial</span>
+      <span class="v">0.14%</span>
+      <span class="sub">Worst deviation across four strike/vol cases, against a CRR tree on identical exercise dates.</span>
+    </div>
+  </div>
+
+  <!-- ================= CORRECTNESS ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Correctness</div>
+      <div>
+        <h2>The paper's recursion was biased without bound</h2>
+        <p>
+          Cvetanoska &amp; Stojanovski value each path with
+          <code>max(intrinsic, discounted continuation)</code> using that path's own
+          realised future. Every path therefore exercises with hindsight. The error is
+          not noise — it grows with the number of exercise dates and never converges.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Pricing error vs number of exercise dates</h3>
+        <p class="cap">
+          Signed error against the exact price, N=100,000 paths. Longstaff-Schwartz
+          replaces the hindsight decision with a cross-sectional regression on
+          in-the-money paths, and the bias collapses to within Monte Carlo noise.
+        </p>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--s2)"></i>Naive per-path recursion</span>
+        <span><i style="background:var(--s1)"></i>Longstaff-Schwartz</span>
+      </div>
+      <div class="chart-box" id="box-bias"><div class="tip" id="tip-bias"></div></div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>Exact price 10.450584 · N = 100,000</caption>
+        <thead>
+          <tr><th>Exercise dates m</th><th>Naive price</th><th>Naive error</th><th>LSM price</th><th>LSM error</th></tr>
+        </thead>
+        <tbody id="tb-bias"></tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <h3>Why a call alone cannot prove this works</h3>
+      <p>
+        For a call on a non-dividend-paying stock, never exercising early is the correct
+        answer — so the test above cannot distinguish a working exercise rule from one
+        that never fires. The put is the real test: early exercise binds, there is no
+        closed form, and a Cox-Ross-Rubinstein tree restricted to the same 20 exercise
+        dates gives an independent reference that shares no code with the Monte Carlo path.
+      </p>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>American put vs binomial tree · m = 20 · N = 200,000 · 5,250-step CRR</caption>
+        <thead>
+          <tr><th>Case</th><th>LSM</th><th>Tree</th><th>Error</th><th>Relative</th><th>Status</th></tr>
+        </thead>
+        <tbody id="tb-put"></tbody>
+      </table>
+    </div>
+    <p class="note">
+      Every deviation sits on the low side or within noise, which is the expected
+      direction: the fitted exercise policy is suboptimal, and a suboptimal policy
+      under-values. The at-the-money put also carries a <strong>+1.22</strong>
+      early-exercise premium over its European counterpart — that premium would be
+      zero if the exercise rule never fired.
+    </p>
+  </section>
+
+  <!-- ================= CONVERGENCE ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Convergence</div>
+      <div>
+        <h2>Quasi-random sampling buys about an order of magnitude</h2>
+        <p>
+          Both estimators price the same contract. The pseudo-random backends fall off
+          at the textbook <span style="white-space:nowrap">O(N<sup>−1/2</sup>)</span>
+          rate; the Sobol sequence with a Brownian bridge converges markedly faster.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Absolute pricing error vs path count</h3>
+        <p class="cap">
+          Log-log. The dashed guide is the ideal N<sup>−1/2</sup> slope anchored at the
+          first LCG point. QMC sits roughly an order of magnitude below the
+          pseudo-random curve throughout, reaching 3-decimal accuracy at 100,000 paths
+          where LCG needs 1,000,000.
+        </p>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--s1)"></i>LCG pseudo-random</span>
+        <span><i style="background:var(--s2)"></i>Sobol QMC + bridge</span>
+        <span><i style="background:var(--faint);height:0;border-top:2px dashed var(--faint)"></i>N<sup>−1/2</sup> reference</span>
+      </div>
+      <div class="chart-box" id="box-conv"><div class="tip" id="tip-conv"></div></div>
+    </div>
+
+    <div class="callout">
+      <h3>The standard-error column does not apply to QMC</h3>
+      <p>
+        The <code>sd/√N</code> formula assumes independent draws, and a Sobol sequence is
+        deterministic and correlated by construction. At N=10⁶ the QMC backends report a
+        standard error of <strong>0.0143</strong> while their actual error against the
+        exact price is <strong>0.000014</strong> — a thousandfold overstatement. The
+        benchmark prints this warning at run time. A real QMC error bar needs randomised
+        QMC: average over several independent digital shifts and take the standard
+        deviation of the means. That is not yet implemented.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= THROUGHPUT ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Throughput</div>
+      <div>
+        <h2>Where the time goes</h2>
+        <p>
+          Median of five runs after a warmup. GPU figures are split into setup and
+          kernel using <code>cudaEvent</code> timers around device work only, so the
+          kernel column is not inflated by per-call allocation.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Wall-clock vs path count</h3>
+        <p class="cap">
+          Log-log. Below roughly 10,000 paths every backend is dominated by fixed
+          overhead — for the GPU that is 38 kernel launches and 19 host round trips for
+          the regression solves, not arithmetic.
+        </p>
+      </div>
+      <div class="legend" id="lg-runtime"></div>
+      <div class="chart-box" id="box-runtime"><div class="tip" id="tip-runtime"></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Speedup at N = 1,000,000</h3>
+        <p class="cap">Relative to the serial backend at 809 ms. Bars are labelled directly.</p>
+      </div>
+      <div class="chart-box" id="box-speed"><div class="tip" id="tip-speed"></div></div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>Full results · call · m = 20 · median of 5 runs</caption>
+        <thead>
+          <tr>
+            <th>Backend</th><th>N</th><th>Price</th><th>Error</th>
+            <th>Total ms</th><th>Setup ms</th><th>Kernel ms</th>
+          </tr>
+        </thead>
+        <tbody id="tb-full"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= VALIDATION ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Validation</div>
+      <div>
+        <h2>What the test suite actually checks</h2>
+        <p>
+          The previous suite asserted only that the price was positive and not NaN, which
+          a 43%-wrong pricer passes. These are the checks that would now catch a
+          regression.
+        </p>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>ctest · 2 suites · 15 checks · all passing</caption>
+        <thead><tr><th>Check</th><th>What it would catch</th><th>Result</th><th></th></tr></thead>
+        <tbody id="tb-valid"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= CAVEATS ================= -->
+  <section>
+    <div class="sec-head">
+      <div class="marker">Caveats</div>
+      <div>
+        <h2>What these numbers do not show</h2>
+      </div>
+    </div>
+    <ul>
+      <li>
+        <strong>The GPU is handicapped here.</strong> The RTX 5060 runs double precision
+        at 1/64 the single-precision rate, and CUDA 12.4 has no native sm_120 target so
+        the kernels arrive by PTX JIT from sm_80. Everything on the device is deliberately
+        double precision, to make CPU/GPU agreement testable rather than to be fast — the
+        two QMC backends match to <strong>1&nbsp;×&nbsp;10<sup>−6</sup></strong>. On a
+        datacenter part with full-rate FP64 the speedup column should look very different.
+      </li>
+      <li>
+        <strong>LSM is low-biased.</strong> The fitted exercise policy is suboptimal, so
+        the estimator converges from below. A true confidence interval needs a paired
+        upper bound (the Andersen-Broadie dual), which is not implemented.
+      </li>
+      <li>
+        <strong>The pseudo-random streams are not independent.</strong> Path seeds are
+        <code>(path_id + 1) × 1234567</code> on a 2³² LCG, so neighbouring paths walk
+        correlated positions on the same lattice. Replacing this with a counter-based
+        generator (cuRAND Philox) is the next correctness item.
+      </li>
+      <li>
+        <strong>Memory now bounds the problem.</strong> LSM regresses across paths at each
+        exercise date, so the whole path set must be resident — N×(m+1) doubles, about
+        176 MB at N=10⁶, m=21. The naive recursion needed none of it.
+      </li>
+    </ul>
+  </section>
+
+  <footer>
+    Generated 25 July 2026 · branch <code>fix/pricing-correctness</code> ·
+    reproduce with <code>cmake --build build &amp;&amp; ./build/american_qmc_cuda</code>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- data
+  const EXACT = 10.450584;
+
+  const BIAS = [
+    { m: 1,  naive: 10.4518, lsm: 10.4518 },
+    { m: 5,  naive: 13.3630, lsm: 10.4426 },
+    { m: 9,  naive: 14.7195, lsm: 10.4342 },
+    { m: 13, naive: 15.4959, lsm: 10.4525 },
+    { m: 17, naive: 15.9839, lsm: 10.4594 },
+    { m: 21, naive: 16.3388, lsm: 10.4573 }
+  ];
+
+  const N_VALS = [1000, 10000, 100000, 200000, 500000, 1000000];
+
+  // err = price - EXACT, from the six-decimal benchmark output
+  const ERR_LCG = [0.241814, 0.092363, 0.011733, 0.016819, 0.003145, 0.000757];
+  const ERR_QMC = [-0.012560, -0.003931, -0.000280, -0.000456, 0.000075, 0.000014];
+
+  const BACKENDS = [
+    { key: "serial",   name: "Serial (LCG)",       color: "--s1",
+      t: [1.179, 5.476, 59.947, 142.256, 397.015, 809.348], err: ERR_LCG },
+    { key: "omp",      name: "OpenMP (LCG)",       color: "--s2",
+      t: [1.106, 2.094, 7.337, 33.048, 68.062, 142.834], err: ERR_LCG },
+    { key: "qmc_omp",  name: "OpenMP QMC",         color: "--s3",
+      t: [1.535, 3.893, 24.652, 60.795, 132.563, 295.120], err: ERR_QMC },
+    { key: "cuda",     name: "CUDA (LCG)",         color: "--s4",
+      t: [0.972, 0.985, 4.825, 9.037, 21.540, 42.133], err: ERR_LCG,
+      setup: [0.028, 0.027, 0.042, 0.099, 0.250, 0.464],
+      kern:  [0.915, 0.926, 4.749, 8.888, 21.231, 41.573] },
+    { key: "qmc_cuda", name: "CUDA QMC",           color: "--s5",
+      t: [0.805, 1.083, 5.327, 10.006, 23.693, 46.406], err: ERR_QMC,
+      setup: [0.072, 0.069, 0.107, 0.136, 0.135, 0.149],
+      kern:  [0.693, 0.978, 5.126, 9.698, 23.213, 45.660] }
+  ];
+
+  const PRICE_LCG = ERR_LCG.map(e => EXACT + e);
+  const PRICE_QMC = ERR_QMC.map(e => EXACT + e);
+
+  const PUTS = [
+    { label: "At the money", detail: "S₀=100 σ=20%", lsm: 6.0611, tree: 6.0626 },
+    { label: "In the money", detail: "S₀=90 σ=20%",  lsm: 11.4334, tree: 11.4495 },
+    { label: "Out of the money", detail: "S₀=110 σ=20%", lsm: 2.9690, tree: 2.9710 },
+    { label: "High volatility", detail: "S₀=100 σ=40%", lsm: 13.6481, tree: 13.6356 }
+  ];
+
+  const VALID = [
+    ["American call == European", "Any bias or mispricing; does not shrink with N", "err &lt; 0.017 at m = 5, 10, 20"],
+    ["American put vs CRR tree", "A wrong exercise boundary", "within 0.14% over 4 cases"],
+    ["Early-exercise premium &gt; 0", "An exercise rule that never fires", "+1.2192"],
+    ["Sobol vs van der Corput", "Bit-reversed direction numbers", "exact to 0"],
+    ["generate() vs point()", "The two Sobol APIs diverging", "0"],
+    ["Sobol per-dimension uniformity", "A collapsed dimension", "max |mean − 0.5| = 1.2e−4"],
+    ["OpenMP 1 thread vs 28", "A wrong reduction in the regression", "diff 2.8e−13"],
+    ["GPU QMC vs host QMC", "Device Sobol, bridge, or LSM drifting", "diff &lt; 1e−6"],
+    ["GPU LCG vs serial", "CPU/GPU backward-pass divergence", "diff &lt; 1e−3"],
+    ["Out-of-range m rejected", "A silent per-thread stack overflow", "returns 0, logs to stderr"]
+  ];
+
+  // ---------------------------------------------------------------- helpers
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (n, a) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  // Colors go in via inline `style` referencing the CSS custom properties, not
+  // as resolved hex in presentation attributes -- that way the charts follow the
+  // viewer's theme toggle live, with no repaint and no page reload.
+  const cvar = name => `var(${name})`;
+  const fmtN = n => n >= 1e6 ? (n / 1e6) + "M" : n >= 1000 ? (n / 1000) + "k" : String(n);
+
+  function tipFor(boxId, tipId) {
+    const box = document.getElementById(boxId), tip = document.getElementById(tipId);
+    return {
+      show(x, y, html) {
+        tip.innerHTML = html;
+        tip.style.left = x + "px";
+        tip.style.top = y + "px";
+        tip.classList.add("on");
+      },
+      hide() { tip.classList.remove("on"); },
+      box
+    };
+  }
+
+  // Generic line chart on linear or log scales.
+  function lineChart(opts) {
+    const { boxId, tipId, series, xs, xLog, yLog, yDomain, xTitle, yTitle,
+            yFmt, xFmt, tipFmt, guide, yTicksN = 6, zeroLine = false } = opts;
+    const t = tipFor(boxId, tipId);
+    const W = 900, H = 380, M = { t: 18, r: 92, b: 46, l: 66 };
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+
+    const xlo = xLog ? Math.log10(xs[0]) : xs[0];
+    const xhi = xLog ? Math.log10(xs[xs.length - 1]) : xs[xs.length - 1];
+    const X = v => M.l + ((xLog ? Math.log10(v) : v) - xlo) / (xhi - xlo) * iw;
+
+    const [ylo, yhi] = yDomain;
+    const Y = v => {
+      const a = yLog ? Math.log10(Math.max(v, ylo)) : v;
+      const lo = yLog ? Math.log10(ylo) : ylo, hi = yLog ? Math.log10(yhi) : yhi;
+      return M.t + ih - (a - lo) / (hi - lo) * ih;
+    };
+
+    // y grid + ticks
+    const yTicks = [];
+    if (yLog) {
+      for (let p = Math.log10(ylo); p <= Math.log10(yhi) + 1e-9; p++) yTicks.push(Math.pow(10, p));
+    } else {
+      const step = (yhi - ylo) / yTicksN;
+      for (let i = 0; i <= yTicksN; i++) yTicks.push(ylo + i * step);
+    }
+    yTicks.forEach(v => {
+      const y = Y(v);
+      svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: y, y2: y, class: "grid-line" }));
+      const lab = el("text", { x: M.l - 10, y: y + 3.5, class: "tick", "text-anchor": "end" });
+      lab.textContent = yFmt(v);
+      svg.appendChild(lab);
+    });
+
+    // x ticks
+    xs.forEach(v => {
+      const x = X(v);
+      const lab = el("text", { x, y: M.t + ih + 20, class: "tick", "text-anchor": "middle" });
+      lab.textContent = xFmt(v);
+      svg.appendChild(lab);
+    });
+    svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: M.t + ih, y2: M.t + ih, class: "axis-line" }));
+
+    // axis titles
+    const xt = el("text", { x: M.l + iw / 2, y: H - 6, class: "axis-title", "text-anchor": "middle" });
+    xt.textContent = xTitle; svg.appendChild(xt);
+    const yt = el("text", { x: 14, y: M.t + ih / 2, class: "axis-title", "text-anchor": "middle",
+                            transform: `rotate(-90 14 ${M.t + ih / 2})` });
+    yt.textContent = yTitle; svg.appendChild(yt);
+
+    // Emphasised zero line: on the bias chart this IS the exact Black-Scholes
+    // price, so it deserves more weight than a grid rule.
+    if (zeroLine) {
+      const y0 = Y(0);
+      svg.appendChild(el("line", { x1: M.l, x2: M.l + iw, y1: y0, y2: y0,
+                                   "stroke-width": 1.5, "stroke-dasharray": "3 3",
+                                   style: `stroke:${cvar("--ink")}`, opacity: "0.55" }));
+      const zl = el("text", { x: M.l + 8, y: y0 - 7, class: "dlabel",
+                              style: `fill:${cvar("--muted")};font-weight:500` });
+      zl.textContent = "exact price";
+      svg.appendChild(zl);
+    }
+
+    // optional reference guide
+    if (guide) {
+      const d = guide.pts.map((p, i) => `${i ? "L" : "M"}${X(p[0])},${Y(p[1])}`).join(" ");
+      svg.appendChild(el("path", { d, fill: "none", "stroke-width": 1.5,
+                                   "stroke-dasharray": "5 4", opacity: "0.75",
+                                   style: `stroke:${cvar("--faint")}` }));
+    }
+
+    // series
+    const endLabels = [];
+    series.forEach(s => {
+      const col = cvar(s.color);
+      const d = s.values.map((val, i) => `${i ? "L" : "M"}${X(xs[i])},${Y(val)}`).join(" ");
+      svg.appendChild(el("path", { d, fill: "none", "stroke-width": 2,
+                                   "stroke-linejoin": "round", "stroke-linecap": "round",
+                                   style: `stroke:${col}` }));
+      s.values.forEach((val, i) => {
+        // 2px surface ring so overlapping markers stay separable
+        svg.appendChild(el("circle", { cx: X(xs[i]), cy: Y(val), r: 4.5, "stroke-width": 2,
+                                       style: `fill:${col};stroke:${cvar("--panel")}` }));
+      });
+      const last = s.values.length - 1;
+      endLabels.push({ name: s.name, col, y: Y(s.values[last]), anchor: Y(s.values[last]) });
+    });
+
+    // Direct labels at the line ends. Three light-mode slots fall below 3:1 on
+    // the light surface, so labels (plus the full tables below) are the required
+    // relief -- identity is never carried by color alone.
+    //
+    // On the runtime chart the CUDA and CUDA-QMC endpoints sit ~4px apart, so
+    // labels are pushed to a minimum spacing and a leader tick is drawn back to
+    // the true endpoint whenever one had to move.
+    const MIN_GAP = 13;
+    endLabels.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < endLabels.length; i++) {
+      if (endLabels[i].y - endLabels[i - 1].y < MIN_GAP)
+        endLabels[i].y = endLabels[i - 1].y + MIN_GAP;
+    }
+    const overflow = endLabels.length && endLabels[endLabels.length - 1].y - (M.t + ih);
+    if (overflow > 0) endLabels.forEach(l => { l.y -= overflow; });
+
+    const xEnd = X(xs[xs.length - 1]);
+    endLabels.forEach(l => {
+      if (Math.abs(l.y - l.anchor) > 1.5) {
+        svg.appendChild(el("line", { x1: xEnd + 3, y1: l.anchor, x2: xEnd + 8, y2: l.y - 4,
+                                     "stroke-width": 1, opacity: "0.55",
+                                     style: `stroke:${l.col}` }));
+      }
+      const lab = el("text", { x: xEnd + 11, y: l.y + 4, class: "dlabel",
+                               style: `fill:${l.col}` });
+      lab.textContent = l.name;
+      svg.appendChild(lab);
+    });
+
+    // hover hit targets, one column per x
+    xs.forEach((xv, i) => {
+      const x = X(xv);
+      const w = iw / xs.length;
+      const hit = el("rect", { x: x - w / 2, y: M.t, width: w, height: ih, class: "hit" });
+      hit.addEventListener("pointerenter", () => {
+        const rect = svg.getBoundingClientRect();
+        const scale = rect.width / W;
+        const rows = series.map(s =>
+          `<span style="color:${cvar(s.color)}">■</span> ${s.name}  ${tipFmt(s.values[i], s)}`).join("\n");
+        t.show(x * scale, (Y(series[0].values[i])) * scale,
+               `${xTitle}: ${xFmt(xv)}\n${rows}`);
+      });
+      hit.addEventListener("pointerleave", () => t.hide());
+      svg.appendChild(hit);
+    });
+
+    t.box.insertBefore(svg, t.box.firstChild);
+  }
+
+  // ---------------------------------------------------------------- chart 1: bias
+  lineChart({
+    boxId: "box-bias", tipId: "tip-bias",
+    xs: BIAS.map(r => r.m),
+    xLog: false, yLog: false,
+    yDomain: [-1, 6], yTicksN: 7, zeroLine: true,
+    xTitle: "Exercise dates m",
+    yTitle: "Price error",
+    xFmt: v => String(v),
+    yFmt: v => (v > 0 ? "+" : "") + v.toFixed(0),
+    tipFmt: v => (v >= 0 ? "+" : "") + v.toFixed(4),
+    series: [
+      { name: "Naive", color: "--s2", values: BIAS.map(r => r.naive - EXACT) },
+      { name: "LSM",   color: "--s1", values: BIAS.map(r => r.lsm - EXACT) }
+    ]
+  });
+
+  // ---------------------------------------------------------------- chart 2: convergence
+  lineChart({
+    boxId: "box-conv", tipId: "tip-conv",
+    xs: N_VALS, xLog: true, yLog: true,
+    yDomain: [1e-5, 1],
+    xTitle: "Paths N",
+    yTitle: "|error|",
+    xFmt: fmtN,
+    yFmt: v => {
+      const p = Math.round(Math.log10(v));
+      return p === 0 ? "1" : "1e" + p;
+    },
+    tipFmt: v => v.toExponential(2),
+    guide: {
+      pts: N_VALS.map(n => [n, 0.241814 * Math.sqrt(1000 / n)])
+    },
+    series: [
+      { name: "LCG", color: "--s1", values: ERR_LCG.map(Math.abs) },
+      { name: "QMC", color: "--s2", values: ERR_QMC.map(Math.abs) }
+    ]
+  });
+
+  // ---------------------------------------------------------------- chart 3: runtime
+  const lg = document.getElementById("lg-runtime");
+  BACKENDS.forEach(b => {
+    const s = document.createElement("span");
+    s.innerHTML = `<i style="background:var(${b.color})"></i>${b.name}`;
+    lg.appendChild(s);
+  });
+
+  lineChart({
+    boxId: "box-runtime", tipId: "tip-runtime",
+    xs: N_VALS, xLog: true, yLog: true,
+    yDomain: [0.5, 1000],
+    xTitle: "Paths N",
+    yTitle: "Wall-clock ms",
+    xFmt: fmtN,
+    yFmt: v => v >= 1 ? String(v) : v.toFixed(1),
+    tipFmt: v => v.toFixed(2) + " ms",
+    series: BACKENDS.map(b => ({
+      name: b.name.replace(" (LCG)", "").replace("OpenMP QMC", "OMP QMC"),
+      color: b.color, values: b.t
+    }))
+  });
+
+  // ---------------------------------------------------------------- chart 4: speedup bars
+  (function speedChart() {
+    const base = 809.348;
+    const rows = BACKENDS.map(b => ({
+      name: b.name, color: b.color, x: base / b.t[5], ms: b.t[5]
+    })).sort((a, b) => a.x - b.x);
+
+    const t = tipFor("box-speed", "tip-speed");
+    const W = 900, rowH = 46, M = { t: 12, r: 30, b: 40, l: 150 };
+    const H = M.t + rows.length * rowH + M.b;
+    const iw = W - M.l - M.r;
+    const max = 21;
+    const X = v => M.l + v / max * iw;
+
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
+
+    [1, 5, 10, 15, 20].forEach(v => {
+      svg.appendChild(el("line", { x1: X(v), x2: X(v), y1: M.t, y2: M.t + rows.length * rowH,
+                                   class: "grid-line" }));
+      const lab = el("text", { x: X(v), y: H - 18, class: "tick", "text-anchor": "middle" });
+      lab.textContent = v + "×";
+      svg.appendChild(lab);
+    });
+
+    rows.forEach((r, i) => {
+      const y = M.t + i * rowH + 9;
+      const h = 22;
+      const col = cvar(r.color);
+
+      const nm = el("text", { x: M.l - 14, y: y + 16, class: "tick",
+                              "text-anchor": "end",
+                              style: `font-size:12px;fill:${cvar("--ink")}` });
+      nm.textContent = r.name;
+      svg.appendChild(nm);
+
+      // 4px rounded data-end, anchored to the 1x baseline
+      svg.appendChild(el("rect", { x: M.l, y, width: Math.max(2, X(r.x) - M.l), height: h,
+                                   rx: 4, style: `fill:${col}` }));
+
+      const val = el("text", { x: X(r.x) + 10, y: y + 16, class: "dlabel",
+                               style: `fill:${cvar("--ink")}` });
+      val.textContent = r.x.toFixed(2) + "×";
+      svg.appendChild(val);
+
+      const hit = el("rect", { x: M.l, y: y - 8, width: iw, height: rowH - 4, class: "hit" });
+      hit.addEventListener("pointerenter", () => {
+        const rect = svg.getBoundingClientRect(), scale = rect.width / W;
+        t.show(X(r.x) * scale, (y + 12) * scale,
+               `${r.name}\n${r.ms.toFixed(1)} ms  ·  ${r.x.toFixed(2)}× serial`);
+      });
+      hit.addEventListener("pointerleave", () => t.hide());
+      svg.appendChild(hit);
+    });
+
+    svg.appendChild(el("line", { x1: M.l, x2: M.l, y1: M.t, y2: M.t + rows.length * rowH,
+                                 class: "axis-line" }));
+    const xt = el("text", { x: M.l + iw / 2, y: H - 2, class: "axis-title", "text-anchor": "middle" });
+    xt.textContent = "Speedup vs serial";
+    svg.appendChild(xt);
+
+    t.box.insertBefore(svg, t.box.firstChild);
+  })();
+
+  // The bar rows are sorted by speedup, so the swatch order there does not match
+  // the fixed categorical assignment. Color still follows the backend, never its
+  // rank -- each row carries its own backend's slot.
+
+  // ---------------------------------------------------------------- tables
+  const sgn = v => (v >= 0 ? "+" : "") + v.toFixed(4);
+
+  document.getElementById("tb-bias").innerHTML = BIAS.map(r => `
+    <tr>
+      <td>${r.m}</td>
+      <td>${r.naive.toFixed(4)}</td>
+      <td class="num-bad">${sgn(r.naive - EXACT)}</td>
+      <td>${r.lsm.toFixed(4)}</td>
+      <td class="num-good">${sgn(r.lsm - EXACT)}</td>
+    </tr>`).join("");
+
+  document.getElementById("tb-put").innerHTML = PUTS.map(p => {
+    const e = p.lsm - p.tree;
+    return `<tr>
+      <td>${p.label} <span style="color:var(--muted)">${p.detail}</span></td>
+      <td>${p.lsm.toFixed(4)}</td>
+      <td>${p.tree.toFixed(4)}</td>
+      <td>${sgn(e)}</td>
+      <td>${(100 * e / p.tree >= 0 ? "+" : "") + (100 * e / p.tree).toFixed(2)}%</td>
+      <td><span class="verdict pass">pass</span></td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("tb-full").innerHTML = BACKENDS.map(b =>
+    N_VALS.map((n, i) => {
+      const price = (b.err === ERR_QMC ? PRICE_QMC : PRICE_LCG)[i];
+      return `<tr>
+        <td><span class="swatch" style="background:var(${b.color})"></span>${i === 0 ? b.name : ""}</td>
+        <td>${n.toLocaleString("en-US")}</td>
+        <td>${price.toFixed(6)}</td>
+        <td class="${Math.abs(b.err[i]) < 0.001 ? "num-good" : ""}">${(b.err[i] >= 0 ? "+" : "") + b.err[i].toFixed(6)}</td>
+        <td>${b.t[i].toFixed(3)}</td>
+        <td>${b.setup ? b.setup[i].toFixed(3) : "—"}</td>
+        <td>${b.kern ? b.kern[i].toFixed(3) : "—"}</td>
+      </tr>`;
+    }).join("")).join("");
+
+  document.getElementById("tb-valid").innerHTML = VALID.map(v => `
+    <tr>
+      <td>${v[0]}</td>
+      <td style="text-align:left;color:var(--muted);white-space:normal">${v[1]}</td>
+      <td>${v[2]}</td>
+      <td><span class="verdict pass">pass</span></td>
+    </tr>`).join("");
+})();
+</script>
+</body>
+</html>

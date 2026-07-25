@@ -84,11 +84,13 @@ int main(int argc, char** argv) {
 #endif
     printf("\n");
 
+    // Six decimals: QMC error at N=1e6 is below 1e-4, so four would print it as
+    // a flat zero and hide the convergence the QMC backends are here to show.
 #ifdef IS_CUDA_BACKEND
-    printf("%-10s %10s %9s %9s %11s %11s %11s\n",
+    printf("%-10s %12s %10s %11s %11s %11s %11s\n",
            "N", "price", "stderr", "err", "total(ms)", "setup(ms)", "kernel(ms)");
 #else
-    printf("%-10s %10s %9s %9s %11s\n",
+    printf("%-10s %12s %10s %11s %11s\n",
            "N", "price", "stderr", "err", "time(ms)");
 #endif
 
@@ -124,16 +126,16 @@ int main(int argc, char** argv) {
 #endif
         }
 
-        char err_buf[16];
-        if (have_exact) snprintf(err_buf, sizeof err_buf, "%+.4f", price - exact);
-        else            snprintf(err_buf, sizeof err_buf, "%9s", "-");
+        char err_buf[24];
+        if (have_exact) snprintf(err_buf, sizeof err_buf, "%+.6f", price - exact);
+        else            snprintf(err_buf, sizeof err_buf, "%11s", "-");
 
 #ifdef IS_CUDA_BACKEND
-        printf("%-10d %10.4f %9.4f %9s %11.3f %11.3f %11.3f\n",
+        printf("%-10d %12.6f %10.6f %11s %11.3f %11.3f %11.3f\n",
                N, price, se, err_buf,
                median(totals), median(setups), median(kernels));
 #else
-        printf("%-10d %10.4f %9.4f %9s %11.3f\n",
+        printf("%-10d %12.6f %10.6f %11s %11.3f\n",
                N, price, se, err_buf, median(totals));
 #endif
         fflush(stdout);
