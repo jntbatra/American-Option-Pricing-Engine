@@ -1,4 +1,5 @@
 #include "../core/black_scholes.hpp"
+#include "../core/backward_induction.hpp"
 #include "../core/quasi_rng.hpp"
 #include "../core/moro_inv_cnd.hpp"
 #include "../core/math_utils.hpp"
@@ -33,16 +34,11 @@ double price_american_call_omp(const OptionParams& p, int num_threads = 0) {
                 S[i] = S[i-1] * std::exp(drift + p.v * sqdt * z);
             }
 
-            double c = bs_call(S[p.m - 1], p.X, dt, p.v, p.r);
-            for (int i = p.m - 1; i >= 1; --i) {
-                double continuation = c * discount;
-                double intrinsic    = S[i] - p.X;
-                c = std::max(intrinsic, continuation);
-            }
-
-            total_sum += c;
+            total_sum += american_call_path_value(S.data(), p.m, p.X, dt,
+                                                  p.v, p.r, discount);
         }
     }
 
-    return (total_sum / static_cast<double>(p.N)) * std::exp(-p.r * p.T);
+    // american_call_path_value() already discounts to t = 0.
+    return total_sum / static_cast<double>(p.N);
 }

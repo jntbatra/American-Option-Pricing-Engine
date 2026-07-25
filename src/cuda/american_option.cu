@@ -1,5 +1,6 @@
 #include "kernels.cuh"
 #include "reduction.cuh"
+#include "../core/backward_induction.hpp"
 #include "../core/math_utils.hpp"
 #include "american_cuda.h"
 #include <cuda_runtime.h>
@@ -41,14 +42,7 @@ __global__ void american_option_kernel(
             S_path[i] = S_path[i-1] * exp(drift + v * sqdt * z);
         }
 
-        double c = bs_call_device(S_path[m - 1], X, dt, v, r);
-        for (int i = m - 1; i >= 1; --i) {
-            double continuation = c * discount;
-            double intrinsic    = S_path[i] - X;
-            c = fmax(intrinsic, continuation);
-        }
-
-        payoff = c;
+        payoff = american_call_path_value(S_path, m, X, dt, v, r, discount);
     }
 
     double block_sum = block_reduce_sum(payoff, sdata);
@@ -60,6 +54,13 @@ __global__ void american_option_kernel(
 
 // ---------------- Host launcher ----------------
 double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
+    // The kernel's per-thread path buffer is double S_path[64], indexed 0..m.
+    if (p.m < 1 || p.m > CUDA_MAX_M) {
+        fprintf(stderr, "price_american_call_cuda: m=%d out of range (1..%d)\n",
+                p.m, CUDA_MAX_M);
+        return 0.0;
+    }
+
     int blocks = (p.N + threads_per_block - 1) / threads_per_block;
 
     double* d_partial = nullptr;
@@ -90,5 +91,6 @@ double price_american_call_cuda(const OptionParams& p, int threads_per_block) {
     double total = 0.0;
     for (double x : h_partial) total += x;
 
-    return (total / static_cast<double>(p.N)) * std::exp(-p.r * p.T);
+    // american_call_path_value() already discounts to t = 0.
+    return total / static_cast<double>(p.N);
 }

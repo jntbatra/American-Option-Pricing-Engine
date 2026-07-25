@@ -1,12 +1,14 @@
 #include "sobol_gpu.cuh"
 #include "kernels.cuh"
 #include "reduction.cuh"
+#include "../core/backward_induction.hpp"
 #include "../core/math_utils.hpp"
 #include "american_cuda.h"
 #include "../core/scramble.hpp"
 #include "../core/brownian_bridge.hpp"
 #include "../core/sobol_joe_kuo.hpp"
 #include <cuda_runtime.h>
+#include <cstdio>
 #include <vector>
 #include <cmath>
 
@@ -72,14 +74,7 @@ __global__ void american_option_qmc_kernel(
             S[i] = S[i-1] * exp(drift + v * dW);
         }
 
-        double c = bs_call_device(S[m - 1], X, dt, v, r);
-        for (int i = m - 1; i >= 1; --i) {
-            double continuation = c * discount;
-            double intrinsic    = S[i] - X;
-            c = fmax(intrinsic, continuation);
-        }
-
-        payoff = c;
+        payoff = american_call_path_value(S, m, X, dt, v, r, discount);
     }
 
     double block_sum = block_reduce_sum(payoff, sdata);
@@ -91,6 +86,18 @@ double price_american_call_qmc_cuda(const OptionParams& p,
                                      int threads_per_block,
                                      uint32_t seed)
 {
+    // The kernel holds the Sobol point, the bridge and the path in fixed-size
+    // per-thread arrays sized by GPU_SOBOL_DIM, and the direction-number table
+    // only has that many dimensions. Larger m would smash the stack silently.
+    static_assert(CUDA_QMC_MAX_M == GPU_SOBOL_DIM,
+                  "host-visible limit must mirror the kernel-side one");
+    if (p.m < 1 || p.m > CUDA_QMC_MAX_M) {
+        fprintf(stderr,
+                "price_american_call_qmc_cuda: m=%d out of range (1..%d)\n",
+                p.m, CUDA_QMC_MAX_M);
+        return 0.0;
+    }
+
     // Direction numbers
     unsigned int V_host[GPU_SOBOL_DIM][GPU_SOBOL_BITS];
     for (int k = 0; k < 32; ++k) {
@@ -182,5 +189,6 @@ double price_american_call_qmc_cuda(const OptionParams& p,
     cudaFree(d_bb_left);
     cudaFree(d_bb_right);
 
-    return (total / static_cast<double>(p.N)) * std::exp(-p.r * p.T);
+    // american_call_path_value() already discounts to t = 0.
+    return total / static_cast<double>(p.N);
 }

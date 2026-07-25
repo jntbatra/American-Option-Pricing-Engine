@@ -1,5 +1,6 @@
 #include "../core/math_utils.hpp"
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 
 #if defined(BACKEND_CUDA) || defined(BACKEND_QMC_CUDA)

@@ -41,9 +41,13 @@ void SobolGenerator::point(uint32_t n, double* out) const {
     uint32_t gray = n ^ (n >> 1);
     for (int dim = 0; dim < d_; ++dim) {
         uint32_t result = shift_[dim];
+        // V_[dim][k] is the direction number for bit k, already left-aligned as
+        // m[k] << (31-k). Index it with k directly -- indexing [31-k] reverses
+        // the bit order and collapses the sequence (dim 0 degenerates to
+        // n * 2^-32). This must stay consistent with sobol_point_device().
         for (int k = 0; k < 32; ++k) {
             if ((gray >> k) & 1u)
-                result ^= V_[dim][31 - k];
+                result ^= V_[dim][k];
         }
         out[dim] = static_cast<double>(result) * SCALE;
     }
@@ -78,12 +82,14 @@ void SobolGenerator::generate(int N, std::vector<double>& points) const {
 
     for (int n = 1; n < N; ++n) {
         uint32_t prev = static_cast<uint32_t>(n - 1);
-        int c = count_trailing_zeros(~prev);  // count trailing 1s
+        int c = count_trailing_zeros(~prev);  // index of rightmost zero bit
 
         if (c >= 32) c = 31;
 
         for (int dim = 0; dim < d_; ++dim) {
-            x[dim] ^= V_[dim][31 - c];
+            // See point(): direction numbers are indexed by bit position
+            // directly, not reversed.
+            x[dim] ^= V_[dim][c];
             points[n * d_ + dim] = static_cast<double>(x[dim]) * SCALE;
         }
     }
