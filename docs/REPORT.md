@@ -9,11 +9,13 @@ Jayant Batra · Thapar Institute of Engineering & Technology · July 2026
 ## Abstract
 
 We set out to reproduce Cvetanoska & Stojanovski's GPU-accelerated American option
-pricer and found that its valuation method is **systematically incorrect**. The
-paper values each simulated path using that path's own realised future, which
-amounts to exercising with perfect foresight. The resulting estimator is biased
-upward without bound in the number of exercise dates: at 21 dates it overprices a
-benchmark contract by **56%**.
+pricer. Its valuation method is a **perfect-foresight estimator**: the paper values
+each simulated path using that path's own realised future, which — as the paper
+itself states — "assume[s] that all future values of the underlying stock price are
+known" and therefore "gives the upper bound value of the American option." That
+upper bound is biased upward without bound in the number of exercise dates (at 21
+dates it exceeds the true price by **56%**), yet the paper presents it as an
+American-option price and does not apply the bias-free methods it cites.
 
 We replace the method with Longstaff-Schwartz least-squares Monte Carlo, and
 validate the replacement against two references that share no code with the
@@ -109,6 +111,14 @@ This is the classic *perfect-foresight* (or high-biased) estimator. Because
 conditional expectation inside a maximum can only overstate the option. Every
 additional exercise date supplies another opportunity to exploit hindsight, so the
 bias **accumulates in `m` rather than converging**.
+
+The paper is explicit that this is what its algorithm computes — it writes that it
+"assume[s] that all future values of the underlying stock price are known" and so
+"gives the upper bound value of the American option." The issue is not a hidden bug
+but that the paper reports this divergent upper bound as an American-option price
+(its Figure 1 shows the value climbing with exercise count) without applying the
+regression or dual-bound methods it cites ([12], [10]). This engine implements the
+first of those, Longstaff-Schwartz.
 
 ### 3.1 Quantifying the bias
 
@@ -456,11 +466,11 @@ double-precision figures pessimistic relative to a datacenter part.
 
 ## 10. Conclusion
 
-The reproduction succeeded in an unintended sense: it established that the method
-being reproduced is wrong, and quantified by how much. Replacing perfect-foresight
-valuation with Longstaff-Schwartz reduced the error on a benchmark contract from
-+56% to 1.7 × 10⁻⁵, verified against two references sharing no code with the
-simulation.
+The reproduction clarified what the reference method actually computes: a
+perfect-foresight upper bound, which the paper acknowledges yet reports as a price.
+Replacing it with Longstaff-Schwartz — the method the paper cites but does not use —
+reduced the error on a benchmark contract from +56% to 1.7 × 10⁻⁵, verified against
+two references sharing no code with the simulation.
 
 The performance work reinforces a broader point. Both of our intuitive explanations
 for the initial GPU shortfall — synchronisation overhead and uncoalesced access —

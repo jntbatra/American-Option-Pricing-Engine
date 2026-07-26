@@ -3,17 +3,21 @@
 **GPU-accelerated Bermudan option pricing by Longstaff-Schwartz least-squares Monte Carlo, in CUDA and OpenMP.**
 
 Started as a reimplementation of *Cvetanoska & Stojanovski, "Using High Performance
-Computing and Monte Carlo Simulation for Pricing American Options"*. The paper's
-valuation method turned out to be **systematically wrong** — biased 56% high at 21
-exercise dates, and the bias grows without bound. This engine replaces it with
-Longstaff-Schwartz, validates the result against two independent references, and
-runs it 53× faster than a serial CPU baseline.
+Computing and Monte Carlo Simulation for Pricing American Options"* (arXiv 1205.0106).
+The paper prices with a **perfect-foresight estimator**: its algorithm, in its own
+words, "assume[s] that all future values of the underlying stock price are known"
+and so "gives the upper bound value of the American option." That upper bound is
+badly divergent — **56% high at 21 exercise dates**, growing without bound — yet the
+paper presents it as an American-option price. This engine replaces it with
+**Longstaff-Schwartz**, the method the paper cites ([12]) but doesn't use, validates
+the result against two independent references, and runs it 53× faster than a serial
+CPU baseline.
 
 | | |
 | --- | --- |
 | **Exact price** (Black-Scholes, non-dividend call) | `10.450584` |
 | **This engine** (QMC, 4M paths) | `10.450566` — error `−1.7e-5` |
-| **The paper's method** | `16.34` — error `+5.89` |
+| **The paper's upper-bound method** | `16.34` — error `+5.89` |
 | **Speedup** | 53.4× serial · 10.0× 28-thread OpenMP |
 | **Tests** | 17 checks, 2 suites, all passing |
 
@@ -31,8 +35,11 @@ counterpart** — early exercise is never optimal. That makes Black-Scholes an e
 yardstick, and any gap is bias, not noise.
 
 The paper values each path with `max(intrinsic, discounted continuation)` using
-**that path's own realised future**. Every path exercises with hindsight, so the
-estimator is biased high and gets worse the more exercise dates you give it.
+**that path's own realised future** — which, as it acknowledges, gives an *upper
+bound* rather than a price. Every path exercises with hindsight, so the estimate is
+biased high and gets worse the more exercise dates you give it. Longstaff-Schwartz
+fixes this by estimating continuation from a cross-path regression instead of the
+realised future.
 
 ---
 
