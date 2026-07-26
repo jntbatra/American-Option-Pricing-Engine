@@ -343,10 +343,10 @@
     <p class="standfirst">
       Five backends — serial, OpenMP, CUDA, and quasi-Monte&nbsp;Carlo variants of the
       last two — pricing Bermudan options by Longstaff-Schwartz. After replacing the
-      source paper's per-path recursion the pricer agrees with the exact Black-Scholes
-      value to <strong>1.7&nbsp;×&nbsp;10<sup>−5</sup></strong>, where the original
-      method was <strong>56% high</strong>. Profiling then moved the GPU from 19× to
-      <strong>53× serial</strong> — and turned up an overflow bug on the way.
+      source paper's perfect-foresight upper-bound estimator the pricer agrees with the
+      exact Black-Scholes value to <strong>1.7&nbsp;×&nbsp;10<sup>−5</sup></strong>,
+      where that estimator was <strong>56% high</strong>. Profiling then moved the GPU
+      from 19× to <strong>53× serial</strong> — and turned up an overflow bug on the way.
     </p>
     <div class="rig">
       <span><b>CPU</b> Intel i7-14700HX · 20C/28T</span>
@@ -384,12 +384,15 @@
     <div class="sec-head">
       <div class="marker">Correctness</div>
       <div>
-        <h2>The paper's recursion was biased without bound</h2>
+        <h2>The paper computes an upper bound, reported as a price</h2>
         <p>
           Cvetanoska &amp; Stojanovski value each path with
           <code>max(intrinsic, discounted continuation)</code> using that path's own
-          realised future. Every path therefore exercises with hindsight. The error is
-          not noise — it grows with the number of exercise dates and never converges.
+          realised future — which, in the paper's own words, "assume[s] that all future
+          values &hellip; are known" and "gives the upper bound value." Every path
+          exercises with hindsight, so the estimate grows with the number of exercise
+          dates and never converges. Not a hidden bug: the paper reports this divergent
+          upper bound as a price and never applies the Longstaff-Schwartz method it cites.
         </p>
       </div>
     </div>
